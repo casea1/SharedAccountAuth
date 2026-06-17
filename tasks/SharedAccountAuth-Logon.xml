@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  SharedAccountAuth-Logon.xml - REFERENCE EXPORT (Task Scheduler 1.2)
+  ===========================================================================
+  Sign-On Audit Logger - Logon task.
+
+  Fires at interactive sign-on FOR THE SHARED ACCOUNT and launches the
+  full-screen, un-closable identify-yourself prompt in the INTERACTIVE user
+  session (session != 0), at least privilege (no elevation). Because the
+  trigger is scoped to the shared account via <UserId>, personal logins
+  never trigger it.
+
+  This file is a standalone, VALID, importable Task Scheduler 1.2 XML and
+  doubles as a human-readable reference of the task that
+  deploy\Register-AuditTasks.ps1 generates and registers per PC.
+
+  The values shown here are ILLUSTRATIVE SAMPLES so the file imports on its
+  own (Task Scheduler -> Import Task..., or schtasks /create /xml):
+
+    UserId      LAB-PC01\LabShared   - the resolved SharedAccount. A LOCAL
+                                       account is fully qualified as
+                                       MACHINE\name; '.\name' and bare 'name'
+                                       from config\AuditConfig.psd1 are
+                                       resolved to $env:COMPUTERNAME\name at
+                                       registration time.
+    Command     C:\Windows\System32\wscript.exe
+    Arguments   "C:\Program Files\SharedAccountAuth\src\Launch-SharedAccountAuth.vbs" Logon
+                                       - the ABSOLUTE install path is resolved
+                                       at registration time.
+
+  Re-run deploy\Register-AuditTasks.ps1 on each PC to bake in THAT machine's
+  real local account and install path; the script overwrites this file with
+  the machine-specific copy for audit.
+
+  Key properties (spec section 11):
+    Principal : LogonType=InteractiveToken, RunLevel=LeastPrivilege
+                (interactive session != 0; NOT SYSTEM/session 0; no elevation)
+    Trigger   : LogonTrigger scoped to the shared account (UserId)
+    Action    : wscript.exe "<install>\src\Launch-SharedAccountAuth.vbs" Logon
+    Settings  : MultipleInstancesPolicy=IgnoreNew,
+                DisallowStartIfOnBatteries=false, StopIfGoingOnBatteries=false,
+                AllowHardTerminate=true, ExecutionTimeLimit=PT0S (no limit),
+                RunOnlyIfNetworkAvailable=false (must run even if the share is
+                down -> the prompt spools locally), Enabled=true.
+  ===========================================================================
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Shared-Account Sign-On Audit Logger - shows the identify-yourself prompt at interactive logon and records the access to the central append-only CSV.</Description>
+    <URI>\SharedAccountAuth-Logon</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <!-- LogonTrigger scoped to the shared account: fires ONLY when this user
+         signs on, so individuals' personal logins never see the prompt. -->
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>LAB-PC01\LabShared</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <!-- UserId = the resolved shared account; the task runs as this user. -->
+      <UserId>LAB-PC01\LabShared</UserId>
+      <!-- InteractiveToken => runs in the user's interactive desktop session
+           (session != 0), which is required so the WPF window is visible.
+           NOT SYSTEM / session 0. -->
+      <LogonType>InteractiveToken</LogonType>
+      <!-- LeastPrivilege => no elevation; the prompt only needs the user's
+           own rights. -->
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <!-- IgnoreNew: if a prompt instance is already running, don't start
+         another (logon + unlock can fire together; the script's debounce
+         also guards this). -->
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <!-- Battery flags false: the prompt MUST run on laptops on battery. -->
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <!-- Must run even if the central share is unreachable; the row spools locally. -->
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <!-- PT0S = no execution time limit (the user may take their time to identify). -->
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <!-- wscript.exe runs the VBS launcher with window style 0 (hidden
+           console), which in turn starts SharedAccountAuth.ps1 -EventType Logon. -->
+      <Command>C:\Windows\System32\wscript.exe</Command>
+      <Arguments>"C:\Program Files\SharedAccountAuth\src\Launch-SharedAccountAuth.vbs" Logon</Arguments>
+    </Exec>
+  </Actions>
+</Task>

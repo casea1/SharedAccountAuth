@@ -1,0 +1,554 @@
+<#
+=======================================================================
+ Setup-SharePermissions.ps1 — admin-once NTFS ACL hardening for the
+ central audit log directory.
+ Windows PowerShell 5.1 / .NET Framework 4.x ONLY. No external modules.
+ Fully offline. Run ONCE, ELEVATED, on the file server that hosts the
+ share (operate on the local NTFS path, e.g. D:\audit — not the UNC).
+
+ ---------------------------------------------------------------------
+ WHAT THIS SCRIPT GUARANTEES (spec section 12)
+ ---------------------------------------------------------------------
+ The shared local account / group can:
+   * CREATE the central log file (access_log.csv) in this folder, and
+   * APPEND rows to it,
+ but can NEVER:
+   * READ the log back (no listing of contents, no header check, no
+     dedup against it), nor
+   * DELETE or truncate it (no overwrite of existing rows).
+ The Auditors group gets Read (+Execute) inherited to files.
+ The Admin / service principal gets FullControl.
+
+ ---------------------------------------------------------------------
+ WHY APPEND-ONLY DICTATES THE ENTIRE WRITE/DEDUP ALGORITHM
+ ---------------------------------------------------------------------
+ Because the shared account is *denied* ReadData on the log, NOTHING in
+ the runtime logic may ever read the central CSV. That single ACL fact
+ forces every design choice in src\AuditCommon.ps1:
+
+   * Header is written ONLY inside the FileMode.CreateNew "create-race"
+     winner — we cannot open the file and look for a header line,
+     because opening it for read is denied. Exactly one machine wins the
+     create race and writes the header; everyone else opens in Append
+     mode and writes a data line only. The header is therefore never
+     duplicated and never read.
+   * Appends use FILE_APPEND_DATA semantics (FileMode.Append +
+     FileAccess.Write) — never WriteData — so a writer can only add to
+     the end and can never seek back to overwrite a prior row. This is
+     mirrored in the ACL: we grant AppendData but explicitly do NOT
+     grant WriteData on files.
+   * The spool flush (Invoke-AuditSpoolFlush) is at-least-once and does
+     NO dedup against the central log, because it cannot read the
+     central log to know what is already there. Rare duplicates are
+     accepted and are visible to the Auditors (who CAN read it).
+   * Cross-machine write safety relies on open-mode (FileShare.Read) +
+     retry/backoff, not on reading the file's state.
+
+ In short: "deny ReadData on the shared account" is the load-bearing
+ security control; the append-only, never-read-the-log algorithm is the
+ direct consequence, not an arbitrary stylistic choice. If this ACL were
+ relaxed to allow reads, a malicious shared-session user could exfiltrate
+ every other user's access history, or tamper with prior rows — exactly
+ what this design exists to prevent.
+
+ ---------------------------------------------------------------------
+ NTFS RIGHTS PRIMER (the bits we use, and their dual dir/file meaning)
+ ---------------------------------------------------------------------
+ A single NTFS access mask bit has TWO names depending on whether the
+ object is a directory or a file:
+
+   bit     FileSystemRights name   on a DIRECTORY        on a FILE
+   ----    ---------------------    -----------------     ----------------
+   0x0001  ReadData                 ListDirectory         ReadData (read bytes)
+   0x0002  CreateFiles              CreateFiles(AddFile)  WriteData (overwrite)
+   0x0004  AppendData               AppendDir(AddSubdir)  AppendData (append)
+   0x0008  ReadExtendedAttributes   ReadEA                ReadEA
+   0x0010  WriteExtendedAttributes  WriteEA               WriteEA
+   0x0020  ExecuteFile              Traverse              ExecuteFile
+   0x0040  DeleteSubdirectoriesAndFiles (dirs only)
+   0x0080  ReadAttributes           ReadAttributes        ReadAttributes
+   0x0100  WriteAttributes          WriteAttributes       WriteAttributes
+   0x10000 Delete                   Delete                Delete
+   0x20000 ReadPermissions          ReadControl           ReadControl
+   0x100000 Synchronize             Synchronize           Synchronize
+
+ KEY INSIGHT used below: on a directory, CreateFiles (0x2) lets the
+ account create a new file (access_log.csv); but the SAME 0x2 bit is
+ WriteData on a FILE, which would permit overwriting existing rows.
+ So we grant CreateFiles on the DIRECTORY (this-folder-only, no file
+ inheritance) and we DO NOT let it inherit to files — files get only
+ AppendData. This is the crux of "create yes, overwrite no".
+
+ ---------------------------------------------------------------------
+ Config block (mirrors config\AuditConfig.psd1 — single source of
+ truth). This deploy script targets the local NTFS folder that BACKS
+ the UNC LogPath; only LogPath is conceptually related:
+ ---------------------------------------------------------------------
+   LogPath  \\server\share\audit\access_log.csv   (the file that lives
+            in -LogDir; this script secures its parent directory)
+ The other AuditConfig keys (RosterPath, LocalRoot, tunables, etc.) are
+ not used here — ACLs are a server-side, one-time concern. Pass the
+ LOCAL directory that backs that UNC path via -LogDir.
+
+ ---------------------------------------------------------------------
+ USAGE
+ ---------------------------------------------------------------------
+   # Preview only (no changes made):
+   .\Setup-SharePermissions.ps1 -LogDir 'D:\audit' `
+       -SharedPrincipal 'DOMAIN\LabShared' `
+       -AuditorsPrincipal 'DOMAIN\Auditors' -WhatIf
+
+   # Apply for real (elevated console required):
+   .\Setup-SharePermissions.ps1 -LogDir 'D:\audit' `
+       -SharedPrincipal 'DOMAIN\LabShared' `
+       -AuditorsPrincipal 'DOMAIN\Auditors'
+=======================================================================
+#>
+
+[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
+param(
+    # Local NTFS directory that holds (or will hold) access_log.csv.
+    # Use the LOCAL path on the file server (e.g. D:\audit), NOT the UNC —
+    # NTFS ACLs are set on the local volume; the SMB share ACL is separate.
+    [Parameter(Mandatory = $true)]
+    [string] $LogDir,
+
+    # The shared account or group that runs the prompt on the workstations.
+    # Format: 'DOMAIN\Shared', '.\LocalGroup', or 'MACHINE\User'.
+    # This principal gets APPEND+CREATE but is DENIED read/delete.
+    [Parameter(Mandatory = $true)]
+    [string] $SharedPrincipal,
+
+    # The group whose members read/audit the log (read-only).
+    [Parameter(Mandatory = $true)]
+    [string] $AuditorsPrincipal,
+
+    # Admin / service principal that gets FullControl. Defaults to the
+    # local Administrators group. Pass a service account if preferred.
+    [Parameter(Mandatory = $false)]
+    [string] $AdminPrincipal = 'BUILTIN\Administrators'
+)
+
+# Tighten errors so a failed ACL step never "half applies" silently.
+Set-StrictMode -Version 2.0
+$ErrorActionPreference = 'Stop'
+
+# =====================================================================
+#  icacls QUICK-REFERENCE (documented alternative; NOT executed here)
+# =====================================================================
+#  The Set-Acl path below is AUTHORITATIVE. The following icacls commands
+#  produce an equivalent result and are handy for spot-checks / one-liners.
+#  (We only INVOKE icacls read-only at the end to print the resulting ACL.)
+#
+#  icacls letter meanings (simple rights):
+#    WD = WriteData / AddFile        (0x2 on a file = overwrite; on a dir = create file)
+#    AD = AppendData / AddSubdir     (0x4: append to a file; add subdir to a dir)
+#    RD = ReadData / ListDirectory   (0x1: read file bytes; list a dir)
+#    S  = Synchronize                (0x100000: required for normal synchronous I/O)
+#    RA = ReadAttributes             (0x80: read size/timestamps — NOT content)
+#    WA = WriteAttributes            (0x100: update attrs the OS touches on write)
+#    X  = ExecuteFile / Traverse     (0x20: pass through a dir to a named child)
+#    D  = Delete                     (0x10000: delete THIS object)
+#    DC = DeleteSubdirectoriesAndFiles (0x40: delete children, dir-only)
+#    RX = ReadAndExecute (RD + X + RA + ReadEA + ReadControl + S)
+#
+#  icacls inheritance/propagation flags:
+#    (CI) = ContainerInherit  — ACE inherits to SUBDIRECTORIES
+#    (OI) = ObjectInherit     — ACE inherits to FILES
+#    (IO) = InheritOnly       — ACE applies to children ONLY, not this object
+#    (NP) = NoPropagate       — inherit to immediate children only (do not cascade)
+#  Absence of (CI)/(OI) on a grant => "this folder only" (no inheritance).
+#
+#  Equivalent commands (run elevated on the server; substitute path/principals):
+#
+#    :: 1) Shared: create the file + traverse, THIS FOLDER ONLY (no inherit flags).
+#    ::    On a DIRECTORY, the WD letter = AddFile = "create access_log.csv".
+#    ::    AD (=AddSubdirectory) is intentionally omitted so the account cannot
+#    ::    create subfolders. No (CI)/(OI) => does not reach files, so WD can
+#    ::    never land on a file as WriteData (=overwrite).
+#    icacls "D:\audit" /grant:r "DOMAIN\Shared:(WD,S,RA,X)"
+#
+#    :: 2) Shared: append rows on FILES ONLY (OI)(IO) = object-inherit, inherit-only,
+#    ::    so the directory itself is unaffected and only files get AppendData.
+#    ::    Note: NO WD here — files must never be overwritable; WA only touches attrs.
+#    icacls "D:\audit" /grant:r "DOMAIN\Shared:(OI)(IO)(AD,S,RA,WA)"
+#
+#    :: 3) Shared: DENY read of contents + delete. (OI) deny so files can't be read;
+#    ::    a non-inherited deny so this folder's own listing (RD=ListDirectory) is
+#    ::    denied too. DC denies delete-of-children via the parent's right.
+#    icacls "D:\audit" /deny "DOMAIN\Shared:(OI)(RD)"
+#    icacls "D:\audit" /deny "DOMAIN\Shared:(RD)"
+#    icacls "D:\audit" /deny "DOMAIN\Shared:(D,DC)"
+#
+#    :: 4) Auditors: read+execute, inherited to subfolders AND files.
+#    icacls "D:\audit" /grant:r "DOMAIN\Auditors:(CI)(OI)(RX)"
+#
+#    :: 5) Admin/service: full control, inherited to subfolders AND files.
+#    icacls "D:\audit" /grant:r "BUILTIN\Administrators:(CI)(OI)(F)"
+#
+#    :: Also remove inheritance from the parent so a broad "Users:Read" can't
+#    :: leak a read of the log to the shared account, then verify:
+#    icacls "D:\audit" /inheritance:r
+#    icacls "D:\audit"
+# =====================================================================
+
+
+function Test-IsElevated {
+<#
+.SYNOPSIS
+    Returns $true if the current process is running elevated (admin).
+.DESCRIPTION
+    Setting NTFS ACLs (especially on a server volume) requires
+    administrative rights / ownership. Offline-safe: uses only the
+    built-in WindowsPrincipal check, no network or module dependency.
+.OUTPUTS
+    [bool]
+#>
+    [CmdletBinding()]
+    param()
+    try {
+        $id  = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $wp  = New-Object System.Security.Principal.WindowsPrincipal($id)
+        return $wp.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {
+        return $false
+    }
+}
+
+
+function New-SharedDirCreateAce {
+<#
+.SYNOPSIS
+    Builds the SHARED principal's "this-folder-only" ALLOW rule that lets
+    it create the log file and traverse, WITHOUT listing the directory.
+.DESCRIPTION
+    Rights (each bit explained):
+      CreateFiles    0x2  — on a DIRECTORY = AddFile = create a new file
+                            (this is how access_log.csv gets created). NOTE:
+                            this same bit is WriteData on a FILE, which is
+                            why we keep it dir-only (no object inheritance).
+      AppendData     0x4  — on a DIRECTORY = AddSubdirectory (harmless here;
+                            included for parity with the create capability).
+      Synchronize    0x100000 — required for normal synchronous file I/O;
+                            without it many file opens fail with odd errors.
+      ReadAttributes 0x80 — query file/dir attributes (size/timestamps).
+                            Reading ATTRIBUTES is not reading CONTENT, so it
+                            does not violate the no-read rule.
+      Traverse       0x20 — on a DIRECTORY = pass THROUGH the folder to a
+                            named child (open access_log.csv by full path)
+                            WITHOUT being able to ListDirectory.
+
+    Inheritance: NONE (this folder only). InheritanceFlags=None means the
+    ACE does not propagate to files or subfolders, so CreateFiles (=WriteData
+    on a file) can NEVER leak onto a file and allow overwriting rows.
+    PropagationFlags=None.
+.PARAMETER Principal
+    The shared account/group (DOMAIN\name, .\name, or MACHINE\name).
+.OUTPUTS
+    [System.Security.AccessControl.FileSystemAccessRule]
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $Principal)
+
+    # NOTE: AppendData (=AddSubdirectory on a directory) is deliberately NOT
+    # granted — the shared account needs to create access_log.csv (CreateFiles),
+    # not arbitrary subfolders inside the locked audit directory. Least privilege.
+    $rights = `
+        [System.Security.AccessControl.FileSystemRights]::CreateFiles    -bor `  # 0x2  create access_log.csv (dir: AddFile)
+        [System.Security.AccessControl.FileSystemRights]::Synchronize    -bor `  # 0x100000 synchronous I/O
+        [System.Security.AccessControl.FileSystemRights]::ReadAttributes -bor `  # 0x80 attrs only (NOT content)
+        [System.Security.AccessControl.FileSystemRights]::Traverse              # 0x20 pass-through to a named child
+
+    # InheritanceFlags::None + PropagationFlags::None  => THIS FOLDER ONLY.
+    return New-Object System.Security.AccessControl.FileSystemAccessRule(
+        $Principal,
+        $rights,
+        [System.Security.AccessControl.InheritanceFlags]::None,
+        [System.Security.AccessControl.PropagationFlags]::None,
+        [System.Security.AccessControl.AccessControlType]::Allow)
+}
+
+
+function New-SharedFileAppendAce {
+<#
+.SYNOPSIS
+    Builds the SHARED principal's ALLOW rule that lets it APPEND rows to
+    files in this folder (inherited to files only).
+.DESCRIPTION
+    Rights (each bit explained):
+      AppendData     0x4  — on a FILE = FILE_APPEND_DATA = append to the
+                            END of the file. CRUCIALLY this does NOT permit
+                            seeking back to overwrite existing rows — that
+                            would require WriteData (0x2), which we DELIBERATELY
+                            omit. This is the "append, never overwrite" control.
+      Synchronize    0x100000 — required for normal synchronous file I/O.
+      ReadAttributes 0x80 — query attributes (NOT content).
+      WriteAttributes 0x100 — update attributes (e.g. archive bit / timestamps
+                            the OS touches on write). Not content; safe.
+
+    Notably ABSENT: WriteData (0x2) and ReadData (0x1). No WriteData means
+    no overwrite of prior rows; no ReadData means no reading the log. (Read is
+    also affirmatively DENIED below, which wins regardless.)
+
+    Inheritance: ObjectInherit + InheritOnly  => applies to FILES only, and
+    NOT to the directory object itself (so it never grants AppendData on the
+    container, only on files within it).
+.PARAMETER Principal
+    The shared account/group.
+.OUTPUTS
+    [System.Security.AccessControl.FileSystemAccessRule]
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $Principal)
+
+    $rights = `
+        [System.Security.AccessControl.FileSystemRights]::AppendData      -bor `  # 0x4   append rows (no overwrite)
+        [System.Security.AccessControl.FileSystemRights]::Synchronize     -bor `  # 0x100000 synchronous I/O
+        [System.Security.AccessControl.FileSystemRights]::ReadAttributes  -bor `  # 0x80  attrs only (NOT content)
+        [System.Security.AccessControl.FileSystemRights]::WriteAttributes        # 0x100 update attrs on write
+
+    # ObjectInherit  => inherit to FILES.
+    # InheritOnly    => this ACE does NOT apply to the directory object itself,
+    #                   only to the files that inherit it.
+    return New-Object System.Security.AccessControl.FileSystemAccessRule(
+        $Principal,
+        $rights,
+        [System.Security.AccessControl.InheritanceFlags]::ObjectInherit,
+        [System.Security.AccessControl.PropagationFlags]::InheritOnly,
+        [System.Security.AccessControl.AccessControlType]::Allow)
+}
+
+
+function New-SharedDenyAce {
+<#
+.SYNOPSIS
+    Builds the SHARED principal's DENY rule (read + delete). DENY ACEs
+    override ALLOW ACEs for the same principal, so this is the hard wall.
+.DESCRIPTION
+    Rights (each bit explained):
+      ReadData       0x1     — on a FILE = read bytes; on a DIR = ListDirectory.
+                              Denying this is THE control that makes the log
+                              unreadable to the shared account (no header
+                              check, no dedup, no exfiltration).
+      Delete         0x10000 — delete THIS object. Denied so the account
+                              cannot remove access_log.csv.
+      DeleteSubdirectoriesAndFiles 0x40 — (directory right) delete children.
+                              Denied so the account cannot delete files in
+                              the folder via the parent's delete-child right.
+
+    Inheritance: ContainerInherit + ObjectInherit (applies to this folder,
+    its subfolders, AND its files). PropagationFlags=None so it cascades
+    fully. A DENY that covers BOTH the container and inherited files ensures
+    the account can neither list the directory nor read/delete any file in it.
+
+    ORDERING NOTE: When persisted, the OS canonicalizes the DACL so explicit
+    DENY ACEs sort before explicit ALLOW ACEs. Thus this deny is evaluated
+    first and reliably overrides the create/append allows above for the same
+    principal. (DENY ReadData + ALLOW AppendData = "append-only, no read".)
+.PARAMETER Principal
+    The shared account/group.
+.OUTPUTS
+    [System.Security.AccessControl.FileSystemAccessRule]
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $Principal)
+
+    $rights = `
+        [System.Security.AccessControl.FileSystemRights]::ReadData -bor `                       # 0x1     no read / no list
+        [System.Security.AccessControl.FileSystemRights]::Delete   -bor `                       # 0x10000 no delete of the log
+        [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles          # 0x40    no delete of children
+
+    # ContainerInherit + ObjectInherit => this folder + subfolders + files.
+    return New-Object System.Security.AccessControl.FileSystemAccessRule(
+        $Principal,
+        $rights,
+        ([System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
+         [System.Security.AccessControl.InheritanceFlags]::ObjectInherit),
+        [System.Security.AccessControl.PropagationFlags]::None,
+        [System.Security.AccessControl.AccessControlType]::Deny)
+}
+
+
+function New-AuditorsReadAce {
+<#
+.SYNOPSIS
+    Builds the AUDITORS group's ALLOW rule: ReadAndExecute + Synchronize,
+    inherited to subfolders and files.
+.DESCRIPTION
+    Rights:
+      ReadAndExecute  — composite = ReadData + ExecuteFile + ReadAttributes
+                        + ReadExtendedAttributes + ReadPermissions + Synchronize.
+                        This is exactly the "read the CSV, list the folder"
+                        capability auditors need.
+      Synchronize     — explicitly OR'd in for clarity (already part of
+                        ReadAndExecute, but stated to be unambiguous).
+    Auditors get NO write/append/delete — read-only review.
+
+    Inheritance: ContainerInherit + ObjectInherit so the right reaches
+    subfolders and files (the log file inherits Read).
+.PARAMETER Principal
+    The auditors group (DOMAIN\Auditors or .\Auditors).
+.OUTPUTS
+    [System.Security.AccessControl.FileSystemAccessRule]
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $Principal)
+
+    $rights = `
+        [System.Security.AccessControl.FileSystemRights]::ReadAndExecute -bor `   # read content + list + traverse
+        [System.Security.AccessControl.FileSystemRights]::Synchronize            # 0x100000 synchronous I/O
+
+    return New-Object System.Security.AccessControl.FileSystemAccessRule(
+        $Principal,
+        $rights,
+        ([System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
+         [System.Security.AccessControl.InheritanceFlags]::ObjectInherit),
+        [System.Security.AccessControl.PropagationFlags]::None,
+        [System.Security.AccessControl.AccessControlType]::Allow)
+}
+
+
+function New-AdminFullControlAce {
+<#
+.SYNOPSIS
+    Builds the ADMIN/service principal's ALLOW FullControl rule, inherited
+    to subfolders and files.
+.DESCRIPTION
+    FullControl so administrators / the service account can manage, rotate,
+    archive, and (if ever needed) delete the log. Inherited to children.
+.PARAMETER Principal
+    The admin/service principal (defaults to BUILTIN\Administrators).
+.OUTPUTS
+    [System.Security.AccessControl.FileSystemAccessRule]
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $Principal)
+
+    return New-Object System.Security.AccessControl.FileSystemAccessRule(
+        $Principal,
+        [System.Security.AccessControl.FileSystemRights]::FullControl,
+        ([System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
+         [System.Security.AccessControl.InheritanceFlags]::ObjectInherit),
+        [System.Security.AccessControl.PropagationFlags]::None,
+        [System.Security.AccessControl.AccessControlType]::Allow)
+}
+
+
+# =====================================================================
+#  MAIN
+# =====================================================================
+
+if (-not (Test-IsElevated)) {
+    Write-Warning 'This script must be run ELEVATED (Run as administrator). Setting NTFS ACLs requires admin rights.'
+    throw 'Not elevated — aborting before touching any ACLs.'
+}
+
+# Resolve / create the target directory. We secure the DIRECTORY; the log
+# file inherits from it (so it is protected even before it first exists).
+$dirExists = Test-Path -LiteralPath $LogDir
+if (-not $dirExists) {
+    if ($PSCmdlet.ShouldProcess($LogDir, 'Create audit log directory')) {
+        New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+        Write-Host "Created directory: $LogDir"
+        $dirExists = $true
+    } else {
+        Write-Host "[WhatIf] Would create directory: $LogDir"
+    }
+}
+
+# Resolve to a full path for clean reporting (only if it actually exists;
+# under -WhatIf on a brand-new path it may not, which is fine).
+$resolvedDir = $LogDir
+if ($dirExists) {
+    try { $resolvedDir = (Resolve-Path -LiteralPath $LogDir -ErrorAction Stop).Path } catch { }
+}
+
+Write-Host ''
+Write-Host '=== Audit log ACL hardening ==='
+Write-Host ("  Directory : {0}" -f $resolvedDir)
+Write-Host ("  Shared    : {0}   (create + append; DENY read/delete)" -f $SharedPrincipal)
+Write-Host ("  Auditors  : {0}   (read-only)" -f $AuditorsPrincipal)
+Write-Host ("  Admin     : {0}   (full control)" -f $AdminPrincipal)
+Write-Host ''
+
+# Build all ACEs FIRST (this validates principal-name resolution early — a
+# bad/unresolvable identity throws here, before we mutate anything on disk).
+$aceSharedCreate = New-SharedDirCreateAce  -Principal $SharedPrincipal
+$aceSharedAppend = New-SharedFileAppendAce -Principal $SharedPrincipal
+$aceSharedDeny   = New-SharedDenyAce       -Principal $SharedPrincipal
+$aceAuditors     = New-AuditorsReadAce     -Principal $AuditorsPrincipal
+$aceAdmin        = New-AdminFullControlAce -Principal $AdminPrincipal
+
+if ($PSCmdlet.ShouldProcess($resolvedDir, 'Apply append-only audit ACL (deny read/delete to shared principal)')) {
+
+    # Get the current ACL, then rebuild a clean, PROTECTED DACL.
+    $acl = Get-Acl -LiteralPath $resolvedDir
+
+    # PROTECT the DACL from parent inheritance and DROP inherited ACEs so the
+    # log directory does not silently inherit a broad "Users:Read" from the
+    # share root (which would let the shared account read the log via an
+    # inherited ALLOW). $true = protect from inheritance, $false = remove
+    # existing inherited ACEs (do not copy them in).
+    $acl.SetAccessRuleProtection($true, $false)
+
+    # Remove any pre-existing explicit ACEs for OUR principals so re-runs are
+    # idempotent (RemoveAccessRuleAll strips all rules matching identity+type).
+    foreach ($r in @($aceSharedCreate, $aceSharedAppend, $aceSharedDeny, $aceAuditors, $aceAdmin)) {
+        [void]$acl.RemoveAccessRuleAll($r)
+    }
+
+    # Add our ACEs. The OS canonicalizes on persist so explicit DENY sorts
+    # before explicit ALLOW; we add deny first anyway for clarity.
+    $acl.AddAccessRule($aceSharedDeny)     # DENY read + delete (the hard wall)
+    $acl.AddAccessRule($aceSharedCreate)   # ALLOW create file + traverse (this folder)
+    $acl.AddAccessRule($aceSharedAppend)   # ALLOW append rows (files only)
+    $acl.AddAccessRule($aceAuditors)       # ALLOW auditors read
+    $acl.AddAccessRule($aceAdmin)          # ALLOW admin full control
+
+    Set-Acl -LiteralPath $resolvedDir -AclObject $acl
+    Write-Host 'ACL applied.'
+} else {
+    Write-Host '[WhatIf] Would protect the DACL (remove inheritance) and apply:'
+    Write-Host '  - DENY  Shared : ReadData + Delete + DeleteSubdirectoriesAndFiles  (CI,OI)'
+    Write-Host '  - ALLOW Shared : CreateFiles + AppendData + Synchronize + ReadAttributes + Traverse  (this folder only)'
+    Write-Host '  - ALLOW Shared : AppendData + Synchronize + ReadAttributes + WriteAttributes  (OI,IO — files only; NO WriteData)'
+    Write-Host '  - ALLOW Auditors : ReadAndExecute + Synchronize  (CI,OI)'
+    Write-Host '  - ALLOW Admin : FullControl  (CI,OI)'
+}
+
+# =====================================================================
+#  VERIFICATION — print the resulting ACL so the operator can eyeball it.
+# =====================================================================
+Write-Host ''
+Write-Host '=== Resulting ACL (verification) ==='
+if (-not (Test-Path -LiteralPath $resolvedDir)) {
+    Write-Host '[WhatIf] Directory does not exist yet (no changes were made) — nothing to read back.'
+} else {
+    try {
+        $finalAcl = Get-Acl -LiteralPath $resolvedDir
+        Write-Host ("Owner : {0}" -f $finalAcl.Owner)
+        Write-Host ("Protected from inheritance : {0}" -f $finalAcl.AreAccessRulesProtected)
+        Write-Host ''
+        $finalAcl.Access |
+            Select-Object IdentityReference,
+                          AccessControlType,
+                          FileSystemRights,
+                          IsInherited,
+                          InheritanceFlags,
+                          PropagationFlags |
+            Format-Table -AutoSize | Out-Host
+
+        Write-Host ''
+        Write-Host 'icacls view (raw flags) for cross-checking:'
+        # icacls is a built-in; reading the ACL via it is offline-safe and shows
+        # the (CI)/(OI)/(IO)/(NP) flags and the letter rights directly.
+        & icacls "$resolvedDir" | Out-Host
+    }
+    catch {
+        Write-Warning ("Could not read back the ACL for verification: {0}" -f $_.Exception.Message)
+    }
+}
+
+Write-Host ''
+Write-Host 'Done. Reminder: the shared account can CREATE + APPEND but can NEVER READ or DELETE the log.'
+Write-Host 'This is why the runtime logic must never read the central CSV (no header check, no dedup).'
