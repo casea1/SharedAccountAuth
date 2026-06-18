@@ -136,9 +136,9 @@ Carried out offline. The repository is one self-contained tree; copy it whole.
 
      | `ClassificationLevel` | Foreground | Background |
      |---|---|---|
-     | `UNCLASSIFIED` | Black | `#007A33` (green) |
-     | `CUI` | White | `#512888` (purple) |
-     | `CONFIDENTIAL` | White | `#003087` (blue) |
+     | `UNCLASSIFIED` | White | `#007A33` (green) |
+     | `CUI` | White | `#512B85` (purple) |
+     | `CONFIDENTIAL` | White | `#0033A0` (blue) |
      | `SECRET` | White | `#C8102E` (red) |
      | `TOP SECRET` | Black | `#FF8C00` (orange) |
 
