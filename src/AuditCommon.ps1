@@ -356,6 +356,21 @@ function Format-AuditRow {
 }
 
 
+function Test-AuditShouldTryNextLogonType {
+<#
+.SYNOPSIS After a failed LogonUser, decide whether to try the next logon type.
+.DESCRIPTION ERROR_LOGON_FAILURE (1326) means the password is genuinely wrong - stop, so a
+             wrong password costs ONE bad-password strike instead of one per logon type
+             (the cause of lockout after 1-2 attempts). Any other error (notably 1385
+             ERROR_LOGON_TYPE_NOT_GRANTED, the STIG "deny network logon" case) means the
+             credential may be valid for a different logon type - keep trying.
+.OUTPUTS [bool] $true to try the next logon type, $false to stop.
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][int] $Win32Error)
+    return ($Win32Error -ne 1326)
+}
+
 function Test-AuditCredential {
 <#
 .SYNOPSIS
@@ -456,11 +471,19 @@ public static extern bool CloseHandle(System.IntPtr hObject);
                 break
             }
             else {
-                # Failure: LogonUser may have emitted a 4625 and bumped the
-                # bad-password count. Do NOT log the password. Try next type.
+                # Capture the failure reason IMMEDIATELY (SetLastError=true on the P/Invoke).
+                $lastErr = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                # Failure: LogonUser may have emitted a 4625 and bumped the bad-password
+                # count. Do NOT log the password. Close any dangling token.
                 if ($token -ne [System.IntPtr]::Zero) {
                     [void][SharedAccountAuth.NativeLogon]::CloseHandle($token)
                     $token = [System.IntPtr]::Zero
+                }
+                # If the password is simply wrong (1326), STOP - trying the other logon
+                # types only burns more bad-password strikes (this caused lockout after
+                # 1-2 attempts). Only fall through for other errors (e.g. 1385 type-not-granted).
+                if (-not (Test-AuditShouldTryNextLogonType -Win32Error $lastErr)) {
+                    break
                 }
             }
         }

@@ -29,6 +29,12 @@ Assert-True  (-not (Test-AuditShouldSwallowKey -VkCode 0x1B))          'lone Esc
 Assert-True  (-not (Test-AuditShouldSwallowKey -VkCode 0x41 -ShiftDown $true)) 'Shift+A (typing) NOT swallowed'
 Assert-True  (-not (Test-AuditShouldSwallowKey -VkCode 0x0D))          'Enter NOT swallowed'
 
+Write-Host 'Task 2: Test-AuditShouldTryNextLogonType'
+Assert-True (-not (Test-AuditShouldTryNextLogonType -Win32Error 1326)) '1326 (bad password) => stop'
+Assert-True ( (Test-AuditShouldTryNextLogonType -Win32Error 1385))     '1385 (type not granted) => try next'
+Assert-True ( (Test-AuditShouldTryNextLogonType -Win32Error 0))        '0 => try next'
+Assert-True ( (Test-AuditShouldTryNextLogonType -Win32Error 5))        'access denied => try next'
+
 Write-Host ''
 if ($script:Failures -gt 0) { Write-Host ("$($script:Failures) failure(s)") -ForegroundColor Red; exit 1 }
 Write-Host 'All tests passed.' -ForegroundColor Green
