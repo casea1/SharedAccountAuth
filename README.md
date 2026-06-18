@@ -34,8 +34,10 @@ SharedAccountAuth/
 │  ├─ Register-AuditTasks.ps1    # registers Logon + SessionUnlock tasks SCOPED to the shared account
 │  ├─ Unregister-AuditTasks.ps1  # removes both tasks
 │  └─ Setup-SharePermissions.ps1 # admin-once: append-only ACLs on the log dir (run on the server)
+├─ assets/
+│  └─ GE-Aerospace-Emblem.png    # logo displayed in the classification banner
 ├─ sample/
-│  └─ roster.csv                 # LastName,FirstName,Username sample
+│  └─ roster.csv                 # Username (required); LastName, FirstName optional
 ├─ tasks/
 │  ├─ SharedAccountAuth-Logon.xml      # reference export of the Logon task
 │  └─ SharedAccountAuth-Unlock.xml     # reference export of the Unlock task
@@ -87,7 +89,7 @@ Unlock ──┘        │
 | `Test-AuditIsSharedAccount` | `-Config <hashtable>` | `[bool]` `$true` if the current user's leaf name equals the `SharedAccount` leaf name (case-insensitive). |
 | `ConvertTo-AuditCsvField` | `-Value <string>` | `[string]` CSV-escaped field (quoted, embedded quotes doubled); `null` → `""`. |
 | `Format-AuditRow` | `-TimestampUtc -TimestampLocal -Username -LastName -FirstName -ComputerName -EventType -AuthResult` | `[string]` one escaped 8-column CSV line in exact header order. |
-| `Get-AuditRosterEntries` | `-Config <hashtable>` | `[pscustomobject]` `@{ Entries = @(@{LastName;FirstName;Username;Display}) sorted+deduped; Source = 'central'\|'cache'\|'none' }`. Validates `LastName,FirstName,Username`; refreshes the cache on a central read. |
+| `Get-AuditRosterEntries` | `-Config <hashtable>` | `[pscustomobject]` `@{ Entries = @(@{LastName;FirstName;Username;Display}) sorted+deduped; Source = 'central'\|'cache'\|'none' }`. Requires only `Username` column; `LastName`/`FirstName` are optional. Refreshes the cache on a central read. |
 | `Test-AuditCredential` | `-Username <string> -Password <SecureString> [-Domain <string>=.]` | `[bool]` `LogonUser` via P/Invoke trying NETWORK(3) → NETWORK_CLEARTEXT(8) → INTERACTIVE(2); strips `MACHINE\`/`.\` prefix; BSTR zeroed in `finally`; never logs the password. |
 | `Write-AuditRow` | `-Config -Username -LastName -FirstName -EventType(Logon\|Unlock) -AuthResult(Success\|Failure) [-TimestampUtc <datetime>] [-ComputerName <string>]` | `[pscustomobject]` `@{ Written=[bool]; Spooled=[bool]; Target=[string] }`. Appends to central, spools on failure, flushes the spool on success. |
 | `Invoke-AuditSpoolFlush` | `-Config <hashtable>` | `[int]` count of spool files flushed. Append-only, no dedup, never reads central, deletes only on confirmed success, never throws. |
@@ -123,13 +125,24 @@ Carried out offline. The repository is one self-contained tree; copy it whole.
 
 ### B. On each workstation (admin, per PC)
 
-4. **Copy the whole tree** to a fixed, protected location — recommended `C:\Program Files\SharedAccountAuth\` (or any AppLocker-allowed dir; see [STIG](#6-stig-considerations)). Keep the `src/`, `config/`, `deploy/`, `tasks/`, `sample/` layout intact — scripts locate siblings via `$PSScriptRoot`.
+4. **Copy the whole tree** to a fixed, protected location — recommended `C:\Program Files\SharedAccountAuth\` (or any AppLocker-allowed dir; see [STIG](#6-stig-considerations)). Keep the `src/`, `config/`, `deploy/`, `tasks/`, `sample/`, `assets/` layout intact — scripts locate siblings via `$PSScriptRoot`.
 
 5. **Edit `config\AuditConfig.psd1`** for the site. At minimum:
    - `LogPath` → the central CSV UNC, e.g. `\\server\share\audit\access_log.csv`
    - `RosterPath` → the central roster UNC, e.g. `\\server\share\audit\roster.csv`
    - **`SharedAccount`** → the one shared account this prompt applies to (e.g. `.\LabShared`). **Required** — `Get-AuditConfig` throws if it is blank.
    - Optionally `AuthDomain` (default `.` = local SAM), `RetryDelayMs`, `DebounceSeconds`, retry tunables, and UI text.
+   - **Classification banner:** `ClassificationLevel` sets the banner color tier; `ClassificationText` overrides the displayed string (defaults to the level name); `ClassificationForeground` / `ClassificationBackground` override individual colors. Built-in level→color defaults:
+
+     | `ClassificationLevel` | Foreground | Background |
+     |---|---|---|
+     | `UNCLASSIFIED` | Black | `#007A33` (green) |
+     | `CUI` | White | `#512888` (purple) |
+     | `CONFIDENTIAL` | White | `#003087` (blue) |
+     | `SECRET` | White | `#C8102E` (red) |
+     | `TOP SECRET` | Black | `#FF8C00` (orange) |
+
+   - **Logo:** `LogoPath` — absolute or `$PSScriptRoot`-relative path to a PNG/BMP displayed in the banner (e.g. `assets\GE-Aerospace-Emblem.png` relative to the install root). Leave blank to hide the logo image.
 
    Leave `RosterCachePath`, `SpoolDir`, `DiagLogPath`, `StateDir` blank to derive them under `LocalRoot` (`C:\ProgramData\SharedAccountAuth`).
 
@@ -228,6 +241,11 @@ The value can be `MACHINE\name`, `.\name`, or a bare `name`; `Test-AuditIsShared
 - **Least-privilege task principal.** Both tasks run with `<LogonType>InteractiveToken</LogonType>` and `<RunLevel>LeastPrivilege</RunLevel>` — an interactive session (≠ 0), **no elevation**.
 - **No audit-policy dependency for unlock.** Unlock detection uses the native Task Scheduler `SessionStateChangeTrigger`/`SessionUnlock`, so it does **not** depend on enabling Security audit policy or on event 4801. (4801 is documented only as an alternative.)
 - **4625 from failed validations.** Each wrong-password attempt calls `LogonUser` and so can generate a Security **4625** and bump the local bad-password count (see [section 3](#3-authentication-model)). This is expected and auditable under the "log failures, no cap" policy; correlate 4625s with the CSV's `AuthResult=Failure` rows.
+- **Keyboard hook (shell-hotkey suppression).** While the prompt is displayed, a low-level `WH_KEYBOARD_LL` hook (`SetWindowsHookEx`) swallows the following key combinations: Win, Win+R, Alt+Tab, Ctrl+Esc, and Ctrl+Shift+Esc. This closes the user-mode routes to the Start menu, Run dialog, task switcher, and Task Manager via keyboard. The hook is installed on `Loaded` and removed on `Closed`.
+- **Temporary Task Manager disable.** Alongside the keyboard hook, the prompt sets `HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System\DisableTaskMgr=1` on `Loaded` and removes the value on `Closed`, preventing Task Manager from opening via any user-mode route while the prompt is up.
+- **Credential-lockout fix (one strike per attempt).** The confirmed-button handler now calls `Test-AuditCredential` exactly once per press and records a single `AuthResult=Failure` row per failed attempt — eliminating the prior double-call that could trigger the local lockout policy in half the normal number of tries.
+- **Raised task priority.** The scheduled tasks run at `AboveNormal` process priority, which reduces the visible desktop flash between session start and the prompt window appearing.
+- **Honest ceiling.** The hook + `DisableTaskMgr` close the user-mode shell routes. They do **not** suppress **Ctrl+Alt+Del** (the kernel Secure Attention Sequence — SAS — cannot be intercepted by user-mode code). The Sign-out option on the Ctrl+Alt+Del screen remains reachable; choosing it ends the shared session (the session terminates — it is **not** an authentication bypass, and the next logon will re-trigger the prompt). Some desktop flash before the window appears is intrinsic and reduced but not fully eliminated; true pre-desktop enforcement requires a credential provider or a GPO synchronous logon script (both out of scope for this offline, built-ins-only tool).
 
 ---
 
@@ -287,7 +305,19 @@ Typical review actions: open in Excel / `Import-Csv`; filter by `ComputerName` f
 
 ### Roster format (`sample/roster.csv`)
 
-Lives at `RosterPath` (readable by the shared account). The header row is required; `Username` is the person's **local** account name validated against the SAM. Extra columns are ignored, blank rows skipped, and apostrophes/commas/spaces are CSV-quoted:
+Lives at `RosterPath` (readable by the shared account). The header row is required. **Only `Username` is required** — it is the person's **local** account name validated against the SAM and the value logged in the CSV. `LastName` and `FirstName` are optional; if present they are stored in the log and shown in the name drop-down (as `LastName, FirstName (username)`); if absent the drop-down shows the username. Extra columns are ignored, blank rows skipped.
+
+Minimal (username-only) format — matches `sample/roster.csv`:
+
+```csv
+Username
+asmith
+bnguyen
+cobrien
+dgarcia
+```
+
+Full format with optional name columns:
 
 ```csv
 LastName,FirstName,Username
@@ -295,10 +325,9 @@ Smith,Alice,asmith
 Nguyen,Bao,bnguyen
 O'Brien,Connor,cobrien
 Garcia-Lopez,Diego,dgarcia
-"St. James",Evelyn,ejames
-"Smith, Jr",Frank,fsmith
-"O'Neill-Vance",Grace,gvance
 ```
+
+Mixed rows (some with names, some without) are accepted — any row missing `LastName`/`FirstName` simply shows the username in the drop-down.
 
 Whoever owns access control edits this file at `RosterPath`. Remember: **every `Username` here must exist as a local account on each PC** where that person should be able to authenticate.
 
@@ -321,7 +350,7 @@ Each line is `yyyy-MM-dd HH:mm:ss [LEVEL] [PID] message`. `Write-AuditDiag` neve
 | Task does not fire / "session 0" | The principal must be `InteractiveToken` in a real interactive session (≠ 0). A task running in session 0 cannot show a window — confirm the registered principal and `RunLevel=LeastPrivilege`. |
 | `Get-AuditConfig` throws | `SharedAccount` missing/blank in `AuditConfig.psd1`, or the psd1 path is wrong. The diag log records the config error before the throw. |
 | Rows are spooling, not landing centrally | Share unreachable or denied — diag shows "Central append failed; spooling". Restore `LogPath`; the next successful write flushes the spool (`Invoke-AuditSpoolFlush`, "Flushed spool file"). Inspect `C:\ProgramData\SharedAccountAuth\spool\`. |
-| "Roster unavailable" / Confirm stays disabled | Central `RosterPath` unreadable **and** no local cache yet (`Source=none`) — diag shows "Roster unavailable from central and cache". Fix share read access; once a central read succeeds the cache refreshes. Also verify the roster has `LastName,FirstName,Username` columns. |
+| "Roster unavailable" / Confirm stays disabled | Central `RosterPath` unreadable **and** no local cache yet (`Source=none`) — diag shows "Roster unavailable from central and cache". Fix share read access; once a central read succeeds the cache refreshes. Also verify the roster has at minimum a `Username` column in its header. |
 | Correct password rejected | Likely STIG network-logon denial interacting with logon types, or the roster `Username` has no matching **local** account on this PC. `Test-AuditCredential` already falls back NETWORK→CLEARTEXT→INTERACTIVE; confirm the local account exists and the password is the **local** account's password (`AuthDomain` should be `.`). |
 | Scripts won't run / blocked | A machine GPO execution policy can override the launcher's `Bypass`, or files copied from a ZIP carry "Mark of the Web". Check `Get-ExecutionPolicy -List`; clear MOTW with `Get-ChildItem -Recurse <install> \| Unblock-File`. |
 | Personal account getting locked out | Repeated wrong passwords increment the local bad-password count (4625). Expected under "no cap" policy; tune `RetryDelayMs` and the local lockout threshold. |
@@ -332,7 +361,7 @@ Each line is `yyyy-MM-dd HH:mm:ss [LEVEL] [PID] message`. `Write-AuditDiag` neve
 
 Documented honestly — do not assume more than the design provides.
 
-- **Not an unbypassable lock.** This is a post-logon modal, not a credential provider. A determined user can use **Ctrl+Alt+Del → Task Manager** (or other Secure-Attention / OS escapes) to kill the prompt process and reach the desktop without authenticating. The window re-asserts `Topmost` and blocks `Esc`/Alt+F4/close, but cannot intercept the SAS. True pre-logon enforcement needs a credential provider (out of scope offline).
+- **Not an unbypassable lock.** This is a post-logon modal, not a credential provider. A low-level keyboard hook blocks Win / Win+R / Alt+Tab / Ctrl+Esc / Ctrl+Shift+Esc, and Task Manager is temporarily disabled while the prompt is up — closing the user-mode shell-escape routes. However, **Ctrl+Alt+Del (the kernel SAS) cannot be intercepted by user-mode code**. The Sign-out option on the Ctrl+Alt+Del screen remains reachable; using it ends the shared session (the session terminates — this is **not** an authentication bypass, and the next logon will re-trigger the prompt). True pre-logon enforcement (no desktop until authenticated, with SAS handled) requires a credential provider (out of scope offline).
 - **Verifies session use, not logon.** Auth confirms **who is using the already-logged-in shared session**, not who may log on. The shared account is already signed in when the window appears.
 - **Local accounts only.** Personal passwords are validated against each machine's **local SAM**. A person can only authenticate on PCs where their local account exists; there is no domain validation.
 - **Uncapped attempts + lockout side effects.** Failed attempts are logged with no cap; each may emit a 4625 and increment the local bad-password count, so a local lockout policy can lock out a personal account. The `RetryDelayMs` delay only slows brute force.

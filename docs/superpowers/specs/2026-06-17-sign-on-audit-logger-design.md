@@ -1,7 +1,7 @@
 # Shared-Account Sign-On Audit Logger — Design Spec
 
 **Date:** 2026-06-17
-**Status:** Approved (rev 3 — 2026-06-18: dropped script signing — scripts run unsigned via `-ExecutionPolicy Bypass`, AppLocker is the integrity control; replaced `Sign-Scripts.ps1` with `deploy/Install-Audit.ps1`, a self-elevating one-command installer + preflight validator. rev 2 — adds local-credential authentication + shared-account scoping)
+**Status:** Approved (rev 4 — 2026-06-18: see §2 rev note for Tasks 1–7 hardening changes. rev 3 — 2026-06-18: dropped script signing — scripts run unsigned via `-ExecutionPolicy Bypass`, AppLocker is the integrity control; replaced `Sign-Scripts.ps1` with `deploy/Install-Audit.ps1`, a self-elevating one-command installer + preflight validator. rev 2 — adds local-credential authentication + shared-account scoping)
 **Target:** Windows 11 Enterprise, air-gapped / offline. Windows PowerShell **5.1** + **.NET Framework 4.x** (WPF/WinForms). **No internet** at build or runtime. **No external modules**. Built-in components only.
 
 ---
@@ -22,6 +22,15 @@ On a **shared local Windows account**, every **sign-on (logon)** and every **wor
 | **Identity proof** | **Pick name from roster (allow-list) + personal password.** `roster.csv` gains a `Username` column; the selected name maps to a local username that is authenticated. No free text. |
 | **Failed attempts** | **Logged** (`AuthResult=Failure`), **no cap**, with a short configurable inter-attempt delay. Lock holds until a valid credential. |
 | **Scope** | **Shared account only** — tasks scoped to the shared account via trigger `UserId`, **plus** a self-check guard in the prompt that exits if the current user isn't the configured shared account. |
+
+> **Rev 4 — 2026-06-18 (Tasks 1–7):** The "Baseline modal … No hooks, no policy edits" lockdown decision above is **superseded** by the following hardening changes implemented in Tasks 1–7:
+>
+> - **Low-level keyboard hook (`WH_KEYBOARD_LL`):** installed on `Loaded`, removed on `Closed`. Swallows Win, Win+R, Alt+Tab, Ctrl+Esc, and Ctrl+Shift+Esc while the prompt is up, closing the user-mode shell-hotkey routes (Start menu, Run dialog, task switcher, Task Manager via keyboard).
+> - **Temporary `DisableTaskMgr`:** `HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System\DisableTaskMgr` is set to `1` on `Loaded` and the value is deleted on `Closed`, preventing Task Manager from opening via any user-mode route while the prompt is displayed.
+> - **Roster — `Username` only required:** `LastName` and `FirstName` columns are now optional. `sample/roster.csv` ships with a `Username`-only header. Rows with both columns display as `LastName, FirstName (username)`; rows with only `Username` display the username.
+> - **Credential-lockout fix:** `Test-AuditCredential` is called exactly once per Confirm press; a single `AuthResult=Failure` row is recorded per failed attempt.
+> - **Raised task priority (`AboveNormal`):** reduces the desktop flash between session start and the prompt appearing.
+> - **Honest ceiling (unchanged):** the hook + `DisableTaskMgr` close user-mode shell routes. **Ctrl+Alt+Del (kernel SAS) cannot be intercepted by user-mode code.** The Sign-out option on the Ctrl+Alt+Del screen remains; using it ends the shared session (session terminates — not an authentication bypass; the next logon re-triggers the prompt). Some flash before the window appears is intrinsic and reduced, not eliminated. True pre-desktop enforcement requires a credential provider or a GPO synchronous logon script (out of scope for this offline, built-ins-only tool).
 
 ## 3. Architecture & Data Flow
 
