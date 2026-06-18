@@ -92,6 +92,20 @@ foreach ($name in 'LogBox','RosterBox','AccountBox','RosterGrid','ResultGrid','V
     Assert-True ($null -ne $win.FindName($name)) "control '$name' present"
 }
 
+Write-Host ''
+Write-Host 'Task 5: classification/logo config keys round-trip'
+$tmpC = Join-Path $env:TEMP ('audcfg2-' + [System.IO.Path]::GetRandomFileName() + '.psd1')
+try {
+    [void](Write-AuditConfigFile -ConfigPath $tmpC -Settings @{
+        LogPath='\\s\a\l.csv'; RosterPath='\\s\a\r.csv'; SharedAccount='.\X'
+        ClassificationLevel='TOP SECRET'; LogoPath='C:\x\logo.png'
+    } -NoBackup)
+    $rc = Import-PowerShellDataFile -LiteralPath $tmpC
+    Assert-Eq $rc.ClassificationLevel 'TOP SECRET' 'ClassificationLevel round-trips'
+    Assert-Eq $rc.LogoPath 'C:\x\logo.png' 'LogoPath round-trips'
+    Assert-Eq $rc.ClassificationForeground '' 'unspecified classification key defaults to empty'
+} finally { Remove-Item -LiteralPath $tmpC -Force -ErrorAction SilentlyContinue }
+
 if ($script:Failures -gt 0) { Write-Host ("$($script:Failures) failure(s)") -ForegroundColor Red; exit 1 }
 Write-Host 'All tests passed.' -ForegroundColor Green
 exit 0

@@ -207,7 +207,8 @@ function Write-AuditConfigFile {
 
     $known = @('LogPath','RosterPath','LocalRoot','RosterCachePath','SpoolDir','DiagLogPath',
                'StateDir','SharedAccount','AuthDomain','RetryDelayMs','DebounceSeconds',
-               'WriteRetryCount','WriteRetryBaseMs','AppName','WindowTitle','WindowSubtitle')
+               'WriteRetryCount','WriteRetryBaseMs','AppName','WindowTitle','WindowSubtitle',
+               'ClassificationLevel','ClassificationText','ClassificationForeground','ClassificationBackground','LogoPath')
     $numeric  = @('RetryDelayMs','DebounceSeconds','WriteRetryCount','WriteRetryBaseMs')
     $defaults = @{
         LogPath='\\server\share\audit\access_log.csv'; RosterPath='\\server\share\audit\roster.csv'
@@ -216,6 +217,7 @@ function Write-AuditConfigFile {
         RetryDelayMs=1000; DebounceSeconds=5; WriteRetryCount=10; WriteRetryBaseMs=50
         AppName='SharedAccountAuth'; WindowTitle='Shared Account - Authenticate to Continue'
         WindowSubtitle='Select your name and enter your personal account password. This window cannot be dismissed.'
+        ClassificationLevel=''; ClassificationText=''; ClassificationForeground=''; ClassificationBackground=''; LogoPath=''
     }
 
     # psd1 literal for a key: single-quoted+escaped string, or a bare integer.
@@ -263,6 +265,14 @@ function Write-AuditConfigFile {
     [void]$sb.AppendLine(('    AppName          = {0}' -f (ConvertTo-AuditPsd1Value 'AppName')))
     [void]$sb.AppendLine(('    WindowTitle      = {0}' -f (ConvertTo-AuditPsd1Value 'WindowTitle')))
     [void]$sb.AppendLine(('    WindowSubtitle   = {0}' -f (ConvertTo-AuditPsd1Value 'WindowSubtitle')))
+
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine('    # --- Classification banner + logo ---')
+    [void]$sb.AppendLine(('    ClassificationLevel      = {0}' -f (ConvertTo-AuditPsd1Value 'ClassificationLevel')))
+    [void]$sb.AppendLine(('    ClassificationText       = {0}' -f (ConvertTo-AuditPsd1Value 'ClassificationText')))
+    [void]$sb.AppendLine(('    ClassificationForeground = {0}' -f (ConvertTo-AuditPsd1Value 'ClassificationForeground')))
+    [void]$sb.AppendLine(('    ClassificationBackground = {0}' -f (ConvertTo-AuditPsd1Value 'ClassificationBackground')))
+    [void]$sb.AppendLine(('    LogoPath                 = {0}' -f (ConvertTo-AuditPsd1Value 'LogoPath')))
 
     # Preserve any extra (non-standard) keys rather than dropping them.
     $extra = @($Settings.Keys | Where-Object { $known -notcontains $_ })

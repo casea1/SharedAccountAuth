@@ -136,6 +136,16 @@ function Get-AuditConfig {
         throw "Audit config error: 'SharedAccount' is required (set it in $ConfigPath)."
     }
 
+    # New optional keys: ensure present so the prompt can read them under StrictMode.
+    foreach ($kv in @(
+        @{ K = 'ClassificationLevel';      V = '' },
+        @{ K = 'ClassificationText';       V = '' },
+        @{ K = 'ClassificationForeground'; V = '' },
+        @{ K = 'ClassificationBackground'; V = '' },
+        @{ K = 'LogoPath';                 V = '' })) {
+        if (-not $cfg.ContainsKey($kv.K)) { $cfg[$kv.K] = $kv.V }
+    }
+
     return $cfg
 }
 

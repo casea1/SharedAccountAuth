@@ -38,4 +38,14 @@
     AppName          = 'SharedAccountAuth'
     WindowTitle      = 'Shared Account — Authenticate to Continue'
     WindowSubtitle   = 'Select your name and enter your personal account password. This window cannot be dismissed.'
+
+    # --- Classification banner (top + bottom). Level drives default colors;
+    #     blank/unknown level => no banner. Override text/colors as needed. ---
+    ClassificationLevel      = 'SECRET'   # '' | UNCLASSIFIED | CUI | CONFIDENTIAL | SECRET | TOP SECRET
+    ClassificationText       = ''         # '' => the level name (e.g. set 'SECRET//NOFORN')
+    ClassificationForeground = ''         # '' => level default (ARGB #AARRGGBB)
+    ClassificationBackground = ''         # '' => level default
+
+    # --- Logo on the auth card. Blank => <InstallRoot>\assets\GE-Aerospace-Emblem.png ---
+    LogoPath                 = ''
 }
