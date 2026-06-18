@@ -70,10 +70,7 @@ $InstallRoot  = Split-Path -Parent $DeployDir
 $SrcDir       = Join-Path $InstallRoot 'src'
 $CommonPath   = Join-Path $SrcDir 'AuditCommon.ps1'
 $RegisterPath = Join-Path $DeployDir 'Register-AuditTasks.ps1'
-
-$LogonTaskName  = 'SharedAccountAuth-Logon'
-$UnlockTaskName = 'SharedAccountAuth-Unlock'
-
+$InstallCommonPath = Join-Path $DeployDir 'AuditInstallCommon.ps1'
 
 function Test-IsAdministrator {
 <#
@@ -117,228 +114,6 @@ function Invoke-SelfElevate {
     if ($SkipValidation) { $inner += ' -SkipValidation' }
 
     Start-Process -FilePath 'powershell.exe' -ArgumentList $inner -Verb RunAs | Out-Null
-}
-
-
-function Get-LocalUserNameSet {
-<#
-.SYNOPSIS
-    Returns a HashSet[string] (lower-cased) of LOCAL user account names.
-.DESCRIPTION
-    Enumerates local users via the ADSI WinNT provider -- fully offline and
-    with no dependency on the Microsoft.PowerShell.LocalAccounts module
-    (which is absent on some SKUs). Never throws; returns an empty set on
-    failure (the cross-checks then just WARN that they could not verify).
-.OUTPUTS
-    [System.Collections.Generic.HashSet[string]]
-#>
-    [CmdletBinding()]
-    param()
-
-    $set = New-Object 'System.Collections.Generic.HashSet[string]'
-    try {
-        $root = [ADSI]("WinNT://" + $env:COMPUTERNAME)
-        foreach ($child in $root.Children) {
-            try {
-                if ($child.SchemaClassName -eq 'User') {
-                    [void]$set.Add(([string]$child.Name).ToLowerInvariant())
-                }
-            } catch {
-                # Skip a child we cannot classify; keep going.
-            }
-        }
-    } catch {
-        # ADSI unavailable -> empty set (cross-checks degrade to "could not verify").
-    }
-    # Unary comma prevents the pipeline from enumerating the set's elements.
-    return ,$set
-}
-
-
-function Get-AuditLeafName {
-<#
-.SYNOPSIS
-    Returns the leaf account name (after the last backslash), trimmed.
-.PARAMETER Name
-    MACHINE\user, .\user, DOMAIN\user, or bare user.
-.OUTPUTS
-    [string]
-#>
-    [CmdletBinding()]
-    param([string] $Name)
-
-    if ([string]::IsNullOrWhiteSpace($Name)) { return '' }
-    $i = $Name.LastIndexOf('\')
-    if ($i -lt 0) { return $Name.Trim() }
-    return $Name.Substring($i + 1).Trim()
-}
-
-
-function New-AuditCheckResult {
-<#
-.SYNOPSIS
-    Builds one preflight result row.
-#>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)] [string] $Check,
-        [Parameter(Mandatory = $true)][ValidateSet('OK', 'WARN', 'FAIL')] [string] $Status,
-        [Parameter(Mandatory = $true)] [string] $Detail
-    )
-    [pscustomobject]@{ Check = $Check; Status = $Status; Detail = $Detail }
-}
-
-
-function Invoke-AuditPreflight {
-<#
-.SYNOPSIS
-    Runs the install-time validation checks. Best-effort: NEVER throws and
-    NEVER writes to the append-only central log (it only reads/Test-Paths).
-.PARAMETER Config
-    Resolved config hashtable from Get-AuditConfig.
-.OUTPUTS
-    [object[]] of @{ Check; Status; Detail } rows.
-#>
-    [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][hashtable] $Config)
-
-    $results = New-Object System.Collections.Generic.List[object]
-
-    # Local users, enumerated once (offline, ADSI).
-    $localUsers = Get-LocalUserNameSet
-
-    # 1. SharedAccount present. Get-AuditConfig throws if blank, so by here it
-    #    is non-blank, but assert explicitly for a clear report row.
-    $shared = [string]$Config.SharedAccount
-    if ([string]::IsNullOrWhiteSpace($shared)) {
-        $results.Add((New-AuditCheckResult -Check 'Config: SharedAccount' -Status 'FAIL' -Detail 'blank - the prompt self-check would exit and nothing would ever log'))
-    } else {
-        $results.Add((New-AuditCheckResult -Check 'Config: SharedAccount' -Status 'OK' -Detail $shared))
-    }
-
-    # 2. Install files present.
-    foreach ($f in @(
-            (Join-Path $SrcDir 'SharedAccountAuth.ps1'),
-            (Join-Path $SrcDir 'AuditCommon.ps1'),
-            (Join-Path $SrcDir 'Launch-SharedAccountAuth.vbs'))) {
-        $leaf = Split-Path -Leaf $f
-        if (Test-Path -LiteralPath $f) {
-            $results.Add((New-AuditCheckResult -Check ("Install file: $leaf") -Status 'OK' -Detail $f))
-        } else {
-            $results.Add((New-AuditCheckResult -Check ("Install file: $leaf") -Status 'FAIL' -Detail ("missing: $f")))
-        }
-    }
-
-    # 2b. Execution-policy GPO override. The scripts are UNSIGNED and the
-    #     launcher runs them with -ExecutionPolicy Bypass (process scope). A
-    #     MachinePolicy/UserPolicy (GPO) execution policy OVERRIDES that token:
-    #       AllSigned    -> blocks ALL unsigned scripts (hard FAIL here)
-    #       RemoteSigned -> blocks only files carrying "Mark of the Web" (WARN)
-    #     MachinePolicy outranks UserPolicy; if neither is set, Bypass governs.
-    try {
-        $mp = [string](Get-ExecutionPolicy -Scope MachinePolicy)
-        $up = [string](Get-ExecutionPolicy -Scope UserPolicy)
-        $effPol = ''
-        $effScope = ''
-        if ($mp -ne 'Undefined') { $effPol = $mp; $effScope = 'MachinePolicy' }
-        elseif ($up -ne 'Undefined') { $effPol = $up; $effScope = 'UserPolicy' }
-
-        if ([string]::IsNullOrEmpty($effPol)) {
-            $results.Add((New-AuditCheckResult -Check 'Execution policy (GPO)' -Status 'OK' -Detail 'no GPO override; launcher Bypass runs the unsigned scripts'))
-        } elseif ($effPol -eq 'AllSigned') {
-            $results.Add((New-AuditCheckResult -Check 'Execution policy (GPO)' -Status 'FAIL' -Detail ("$effScope=AllSigned overrides Bypass - UNSIGNED scripts are BLOCKED; sign them or relax the GPO")))
-        } elseif ($effPol -eq 'RemoteSigned') {
-            $results.Add((New-AuditCheckResult -Check 'Execution policy (GPO)' -Status 'WARN' -Detail ("$effScope=RemoteSigned blocks only Mark-of-the-Web files; Unblock-File the install dir if scripts came via ZIP/USB")))
-        } else {
-            $results.Add((New-AuditCheckResult -Check 'Execution policy (GPO)' -Status 'OK' -Detail ("$effScope=$effPol does not block unsigned scripts")))
-        }
-    } catch {
-        $results.Add((New-AuditCheckResult -Check 'Execution policy (GPO)' -Status 'WARN' -Detail ("could not read execution policy: {0}" -f $_.Exception.Message)))
-    }
-
-    # 3. SharedAccount local-account existence (only meaningful if local).
-    $sharedLeaf = (Get-AuditLeafName -Name $shared).ToLowerInvariant()
-    if (-not [string]::IsNullOrWhiteSpace($sharedLeaf)) {
-        if ($localUsers.Count -eq 0) {
-            $results.Add((New-AuditCheckResult -Check 'SharedAccount exists locally' -Status 'WARN' -Detail 'could not enumerate local accounts to verify'))
-        } elseif ($localUsers.Contains($sharedLeaf)) {
-            $results.Add((New-AuditCheckResult -Check 'SharedAccount exists locally' -Status 'OK' -Detail $sharedLeaf))
-        } else {
-            $results.Add((New-AuditCheckResult -Check 'SharedAccount exists locally' -Status 'WARN' -Detail ("no local account '$sharedLeaf' (fine if it is a domain account)")))
-        }
-    }
-
-    # 4. Central LogPath reachability (parent dir only). We do NOT probe-write:
-    #    the dir is append-only / no-read / no-delete to the shared account, so
-    #    a probe file would litter and could not be cleaned. If unreachable,
-    #    runtime spools locally -> WARN, not FAIL.
-    $logPath = [string]$Config.LogPath
-    if ([string]::IsNullOrWhiteSpace($logPath)) {
-        $results.Add((New-AuditCheckResult -Check 'Central LogPath' -Status 'FAIL' -Detail 'blank in config'))
-    } else {
-        $logDir = Split-Path -Parent $logPath
-        if (-not [string]::IsNullOrWhiteSpace($logDir) -and (Test-Path -LiteralPath $logDir)) {
-            $results.Add((New-AuditCheckResult -Check 'Central LogPath reachable' -Status 'OK' -Detail $logDir))
-        } else {
-            $results.Add((New-AuditCheckResult -Check 'Central LogPath reachable' -Status 'WARN' -Detail ("$logDir unreachable now - runtime will SPOOL locally until it returns")))
-        }
-    }
-
-    # 5. Roster load + per-username local-account cross-check.
-    try {
-        $roster  = Get-AuditRosterEntries -Config $Config
-        $entries = @($roster.Entries)
-        switch ([string]$roster.Source) {
-            'central' { $results.Add((New-AuditCheckResult -Check 'Roster source' -Status 'OK'   -Detail ("central ({0} entries)" -f $entries.Count))) }
-            'cache'   { $results.Add((New-AuditCheckResult -Check 'Roster source' -Status 'WARN' -Detail ("central unreadable; using local cache ({0} entries)" -f $entries.Count))) }
-            default   { $results.Add((New-AuditCheckResult -Check 'Roster source' -Status 'FAIL' -Detail 'unavailable from central AND cache - Confirm stays disabled')) }
-        }
-
-        if ($entries.Count -gt 0) {
-            if ($localUsers.Count -eq 0) {
-                $results.Add((New-AuditCheckResult -Check 'Roster users exist locally' -Status 'WARN' -Detail 'could not enumerate local accounts to verify'))
-            } else {
-                $missing = @()
-                foreach ($e in $entries) {
-                    $u = (Get-AuditLeafName -Name ([string]$e.Username)).ToLowerInvariant()
-                    if (-not [string]::IsNullOrWhiteSpace($u) -and -not $localUsers.Contains($u)) {
-                        $missing += [string]$e.Username
-                    }
-                }
-                if ($missing.Count -eq 0) {
-                    $results.Add((New-AuditCheckResult -Check 'Roster users exist locally' -Status 'OK' -Detail 'every roster Username has a local account on this PC'))
-                } else {
-                    $results.Add((New-AuditCheckResult -Check 'Roster users exist locally' -Status 'WARN' -Detail ("{0} cannot authenticate here (no local account): {1}" -f $missing.Count, ($missing -join ', '))))
-                }
-            }
-        }
-    } catch {
-        $results.Add((New-AuditCheckResult -Check 'Roster check' -Status 'WARN' -Detail ("could not evaluate roster: {0}" -f $_.Exception.Message)))
-    }
-
-    # 6. Local state root present/writable (Get-AuditConfig creates it).
-    $localRoot = [string]$Config.LocalRoot
-    if (-not [string]::IsNullOrWhiteSpace($localRoot) -and (Test-Path -LiteralPath $localRoot)) {
-        $results.Add((New-AuditCheckResult -Check 'Local state root' -Status 'OK' -Detail $localRoot))
-    } else {
-        $results.Add((New-AuditCheckResult -Check 'Local state root' -Status 'WARN' -Detail ("not present yet: $localRoot")))
-    }
-
-    # 7. Tasks registered + enabled.
-    foreach ($tn in @($LogonTaskName, $UnlockTaskName)) {
-        $t = Get-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue
-        if ($null -eq $t) {
-            $results.Add((New-AuditCheckResult -Check ("Task: $tn") -Status 'FAIL' -Detail 'not registered'))
-        } elseif ([string]$t.State -eq 'Disabled') {
-            $results.Add((New-AuditCheckResult -Check ("Task: $tn") -Status 'WARN' -Detail 'registered but DISABLED'))
-        } else {
-            $uid = ''
-            try { $uid = [string]$t.Principal.UserId } catch { }
-            $results.Add((New-AuditCheckResult -Check ("Task: $tn") -Status 'OK' -Detail ("state=$($t.State), UserId=$uid")))
-        }
-    }
-
-    return $results.ToArray()
 }
 
 
@@ -395,6 +170,8 @@ if (-not (Test-Path -LiteralPath $CommonPath)) {
     throw "AuditCommon.ps1 not found at $CommonPath"
 }
 . $CommonPath
+if (-not (Test-Path -LiteralPath $InstallCommonPath)) { throw "AuditInstallCommon.ps1 not found at $InstallCommonPath" }
+. $InstallCommonPath
 
 $cfg = $null
 try {
@@ -432,7 +209,7 @@ if (-not $ValidateOnly) {
 
 # Preflight validation (unless skipped).
 if (-not $SkipValidation) {
-    $results = Invoke-AuditPreflight -Config $cfg
+    $results = Invoke-AuditPreflight -Config $cfg -SrcDir $SrcDir
     Write-AuditPreflightReport -Results $results
     $failCount = @($results | Where-Object { $_.Status -eq 'FAIL' }).Count
     Write-AuditDiag -Config $cfg -Level Info -Message ("Install-Audit preflight: {0} checks, {1} FAIL." -f $results.Count, $failCount)
