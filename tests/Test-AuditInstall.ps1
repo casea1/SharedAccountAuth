@@ -106,6 +106,13 @@ try {
     Assert-Eq $rc.ClassificationForeground '' 'unspecified classification key defaults to empty'
 } finally { Remove-Item -LiteralPath $tmpC -Force -ErrorAction SilentlyContinue }
 
+Write-Host ''
+Write-Host 'Task 7: task priority'
+$logonXml = Get-Content -Raw (Join-Path $RepoRoot 'tasks\SharedAccountAuth-Logon.xml')
+Assert-True ($logonXml -match '<Priority>4</Priority>') 'Logon task priority is 4'
+$unlockXml = Get-Content -Raw (Join-Path $RepoRoot 'tasks\SharedAccountAuth-Unlock.xml')
+Assert-True ($unlockXml -match '<Priority>4</Priority>') 'Unlock task priority is 4'
+
 if ($script:Failures -gt 0) { Write-Host ("$($script:Failures) failure(s)") -ForegroundColor Red; exit 1 }
 Write-Host 'All tests passed.' -ForegroundColor Green
 exit 0

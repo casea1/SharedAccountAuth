@@ -102,7 +102,7 @@
     <WakeToRun>false</WakeToRun>
     <!-- PT0S = no execution time limit (the user may take their time to identify). -->
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>7</Priority>
+    <Priority>4</Priority>
   </Settings>
   <Actions Context="Author">
     <Exec>
