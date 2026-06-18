@@ -1,7 +1,7 @@
 # Shared-Account Sign-On Audit Logger — Design Spec
 
 **Date:** 2026-06-17
-**Status:** Approved (rev 2 — adds local-credential authentication + shared-account scoping)
+**Status:** Approved (rev 3 — 2026-06-18: dropped script signing — scripts run unsigned via `-ExecutionPolicy Bypass`, AppLocker is the integrity control; replaced `Sign-Scripts.ps1` with `deploy/Install-Audit.ps1`, a self-elevating one-command installer + preflight validator. rev 2 — adds local-credential authentication + shared-account scoping)
 **Target:** Windows 11 Enterprise, air-gapped / offline. Windows PowerShell **5.1** + **.NET Framework 4.x** (WPF/WinForms). **No internet** at build or runtime. **No external modules**. Built-in components only.
 
 ---
@@ -17,7 +17,7 @@ On a **shared local Windows account**, every **sign-on (logon)** and every **wor
 | Unlock trigger | **Native Task Scheduler `SessionStateChangeTrigger` → `SessionUnlock`** (no Security audit-policy dependency). 4801 documented as alternative only. |
 | Lockdown level | **Baseline modal**: Topmost / `WindowStyle=None` / spans all monitors / no close-minimize / Alt+F4·Esc·close disabled / re-assert topmost on deactivate. No hooks, no policy edits. Known bypasses documented. |
 | Roster source | **Central read-only share, with last-known-good local cache fallback.** Refresh cache on every successful central read. |
-| Signing posture | **AllSigned** primary + `Sign-Scripts.ps1` helper. RemoteSigned documented as fallback. |
+| Signing posture | **Unsigned** (rev 3): scripts run via `-ExecutionPolicy Bypass`; **AppLocker** over the install dir is the integrity control, not code signing. Sites that mandate signing can switch the launcher token to AllSigned/RemoteSigned and sign the `.ps1`/`.psd1`. |
 | **Personal account type** | **Local accounts** (`.\user`, validated against the local SAM). No domain controller required. |
 | **Identity proof** | **Pick name from roster (allow-list) + personal password.** `roster.csv` gains a `Username` column; the selected name maps to a local username that is authenticated. No free text. |
 | **Failed attempts** | **Logged** (`AuthResult=Failure`), **no cap**, with a short configurable inter-attempt delay. Lock holds until a valid credential. |
@@ -63,10 +63,10 @@ SharedAccountAuth/
 ├─ config/
 │  └─ AuditConfig.psd1           # single source of truth for paths/tunables + SharedAccount
 ├─ deploy/
+│  ├─ Install-Audit.ps1          # one-command per-PC install: self-elevate, register tasks, preflight-validate
 │  ├─ Register-AuditTasks.ps1    # registers Logon + SessionUnlock tasks SCOPED to the shared account
 │  ├─ Unregister-AuditTasks.ps1  # removes both tasks
-│  ├─ Setup-SharePermissions.ps1 # admin-once: append-only ACLs on the log dir
-│  └─ Sign-Scripts.ps1           # Authenticode-sign all .ps1/.psd1
+│  └─ Setup-SharePermissions.ps1 # admin-once: append-only ACLs on the log dir
 ├─ sample/
 │  └─ roster.csv                 # LastName,FirstName,Username sample
 ├─ tasks/
@@ -211,7 +211,7 @@ TimestampUTC,TimestampLocal,Username,LastName,FirstName,ComputerName,EventType,A
 **Tradeoff comment block (required):** modal-lockdown (post-logon desktop block), **not** a credential provider (pre-logon). Even with password auth, a determined user can reach Ctrl+Alt+Del → Task Manager and kill the process; document honestly. True pre-logon enforcement needs a credential provider (out of scope offline). Note that auth here verifies *who is using the already-logged-in shared session*, not a logon gate.
 
 ## 10. `src/Launch-SharedAccountAuth.vbs`
-Self-locating hidden launcher (per prior design): derive own folder, accept EventType arg (default `Logon`), run `powershell.exe -NoProfile -ExecutionPolicy AllSigned -WindowStyle Hidden -File "<dir>\SharedAccountAuth.ps1" -EventType <evt>` via `sh.Run cmd, 0, False`. Comment AllSigned/AppLocker note and the RemoteSigned switch.
+Self-locating hidden launcher (per prior design): derive own folder, accept EventType arg (default `Logon`), run `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "<dir>\SharedAccountAuth.ps1" -EventType <evt>` via `sh.Run cmd, 0, False`. Comment the no-signing/Bypass + AppLocker note (Bypass also avoids "Mark of the Web"; a machine-level GPO execution policy overrides the process-scope token, so signing may be mandated regardless).
 
 ## 11. Triggering — `deploy/Register-AuditTasks.ps1` / `Unregister-AuditTasks.ps1`
 
@@ -241,8 +241,10 @@ St. James,Evelyn,ejames
 ```
 - `Username` = the person's **local** account name (validated against the local SAM). Header row required; extra columns ignored; blank rows skipped; apostrophes/commas/spaces in names handled (CSV-quoted). README documents format, location, who edits it, and that every roster `Username` must exist as a local account on each shared PC.
 
-## 14. Signing — `deploy/Sign-Scripts.ps1`
-Unchanged: `-Thumbprint` or auto-pick first `CodeSigning` cert; `Set-AuthenticodeSignature` over all `*.ps1`/`*.psd1`; **no internet timestamp** (offline) with the expiry caveat documented; `.vbs` not Authenticode-signed here (AppLocker governs it). Print a summary.
+## 14. Execution policy & install — `deploy/Install-Audit.ps1` (rev 3)
+Scripts are **not signed**. `src/Launch-SharedAccountAuth.vbs` runs the prompt with `-ExecutionPolicy Bypass` (also avoids the "Mark of the Web" block on a copied `.ps1`); AppLocker path rules over the install directory are the integrity control. The former `Sign-Scripts.ps1` helper and the AllSigned posture are removed. (A site that mandates signing flips the launcher token to AllSigned/RemoteSigned and signs the `.ps1`/`.psd1`; a machine-level GPO execution policy overrides the process-scope token regardless.)
+
+`deploy/Install-Audit.ps1` is the one-command per-PC installer: it **self-elevates** (UAC, relaunch in a `-NoExit` window), registers the tasks by invoking `Register-AuditTasks.ps1` (no duplicated XML), then runs a **preflight validator**. Modes: default (register + preflight), `-ValidateOnly` (preflight only, changes nothing), `-SkipValidation` (register only). The preflight is best-effort/never-throws, **never writes to the append-only central log**, and reports OK/WARN/FAIL for: config valid + `SharedAccount` set; install files present; `SharedAccount` and every roster `Username` cross-checked against local accounts (enumerated offline via the ADSI WinNT provider); central `LogPath` UNC reachability; roster load + source; local state root; and both tasks registered + enabled.
 
 ## 15. Diagnostics, Security & Error Handling
 
@@ -253,11 +255,11 @@ Unchanged: `-Thumbprint` or auto-pick first `CodeSigning` cert; `Set-Authenticod
 
 ## 16. README.md — required contents
 1. What it is + data-flow diagram (incl. authentication + shared-account scoping).
-2. **Install steps** (copy tree, edit `AuditConfig.psd1` incl. `SharedAccount`, run `Setup-SharePermissions.ps1` on the server, `Sign-Scripts.ps1`, `Register-AuditTasks.ps1` per PC, ensure each roster `Username` exists locally).
+2. **Install steps** (copy tree, edit `AuditConfig.psd1` incl. `SharedAccount`, run `Setup-SharePermissions.ps1` on the server, then `Install-Audit.ps1` per PC — self-elevates, registers the tasks via `Register-AuditTasks.ps1`, and preflight-validates incl. that each roster `Username` exists locally).
 3. **Authentication model** — local-SAM password validation via `LogonUser`; the NETWORK→CLEARTEXT→INTERACTIVE fallback and the STIG "deny network logon for local accounts" reason; secure password handling (SecureString, zeroed, never logged); local account lockout-policy note (no cap + delay).
 4. **Credential-provider vs modal tradeoff** — honest: post-logon desktop lock vs pre-logon gating; Ctrl+Alt+Del/Task-Manager bypass; auth verifies *who is using the shared session*, not a logon gate; why a credential provider is out of scope offline.
 5. **Shared-account-only behavior** — how trigger `UserId` scoping + the prompt self-check ensure individuals' personal logins never see the prompt; how to set `SharedAccount`.
-6. **STIG considerations** — AllSigned + signing; AppLocker pathing for `C:\ProgramData\SharedAccountAuth\` and the script dir; least-privilege task principal; no audit-policy dependency for unlock; 4625 generation from failed validations.
+6. **STIG considerations** — unsigned scripts via `-ExecutionPolicy Bypass` (GPO-policy override caveat, Mark-of-the-Web note); AppLocker pathing for `C:\ProgramData\SharedAccountAuth\` and the script dir as the integrity control; least-privilege task principal; no audit-policy dependency for unlock; 4625 generation from failed validations.
 7. **Testing** — logon trigger (sign out/in **as the shared account**, and confirm it does NOT pop on a personal account); unlock trigger (Win+L then unlock); a correct-password run and a wrong-password run (verify `AuthResult` rows + that the lock holds); share-down → spool + flush.
 8. **Multi-PC deployment** — identical config/paths everywhere; `ComputerName` differentiates; roster usernames must exist locally on every PC.
 9. **Auditor review** — open the CSV read-only as `Auditors`; columns (incl. `Username`, `AuthResult`) explained; sort/filter by `ComputerName`/`EventType`/`AuthResult`.

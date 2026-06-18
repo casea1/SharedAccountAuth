@@ -13,24 +13,26 @@
 '  file and SharedAccountAuth.ps1 is always found as a sibling.
 '
 '  ---------------------------------------------------------------
-'  SECURITY NOTE -- what AllSigned gates (and what it does NOT):
+'  EXECUTION POLICY NOTE -- the scripts are NOT signed:
 '  ---------------------------------------------------------------
-'  The "-ExecutionPolicy AllSigned" token below applies to the
-'  POWERSHELL script (SharedAccountAuth.ps1). It forces PowerShell to refuse
-'  to run that .ps1 unless it carries a trusted Authenticode signature.
+'  The "-ExecutionPolicy Bypass" token below lets PowerShell run
+'  SharedAccountAuth.ps1 WITHOUT an Authenticode signature. By project
+'  policy these scripts are not code-signed. Bypass (rather than
+'  RemoteSigned) also avoids the "Mark of the Web" block that can
+'  otherwise stop a .ps1 copied in from a ZIP or removable media -- a
+'  blocked script would mean no audit prompt, i.e. a SILENT failure.
+'  The token applies only to THIS launched powershell.exe process.
 '
-'  It does NOT gate THIS .vbs file. VBScript is executed by the Windows
-'  Script Host (wscript.exe), which ignores PowerShell execution policy
-'  entirely. The VBS launcher is instead covered by AppLocker (Script
-'  rules) -- see README for the AppLocker policy that whitelists this
-'  launcher and blocks arbitrary scripts. So: AppLocker -> VBS,
-'  AllSigned -> PS1. Two different gates, by design.
+'  Neither this .vbs nor the .ps1 is gated by a signature. Both are
+'  instead governed by AppLocker (Script / path rules) -- see README for
+'  the AppLocker policy that whitelists the install directory and blocks
+'  arbitrary scripts elsewhere. So: AppLocker is the integrity control;
+'  code signing is not used.
 '
-'  To switch the PowerShell gate to RemoteSigned (e.g. during dev when
-'  the .ps1 is not yet signed), change the single token "AllSigned" to
-'  "RemoteSigned" in the cmd string below -- nothing else needs to
-'  change. (RemoteSigned only requires a signature on scripts that came
-'  from the internet zone; locally-authored .ps1 files run unsigned.)
+'  If a site DOES mandate signing, set this single token to "AllSigned"
+'  (or "RemoteSigned") and sign the .ps1/.psd1 yourself -- but note that a
+'  MACHINE-LEVEL GPO execution policy, if set, OVERRIDES this process-scope
+'  token, so signing may be required regardless of what is written here.
 ' =====================================================================
 
 Option Explicit
@@ -49,11 +51,11 @@ If WScript.Arguments.Count > 0 Then evt = WScript.Arguments(0)
 
 ' Build the PowerShell invocation.
 '   -NoProfile        : ignore user/host profiles (fast, deterministic)
-'   -ExecutionPolicy  : AllSigned -- gates the .ps1 (see SECURITY NOTE)
+'   -ExecutionPolicy  : Bypass -- run the unsigned .ps1 (see NOTE above)
 '   -WindowStyle Hidden : belt-and-suspenders; sh.Run 0 already hides it
 '   -File "<ps1>"     : run the audit prompt script
 '   -EventType <evt>  : pass through Logon / Unlock / etc.
-cmd = "powershell.exe -NoProfile -ExecutionPolicy AllSigned -WindowStyle Hidden -File """ & ps1 & """ -EventType " & evt
+cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & ps1 & """ -EventType " & evt
 
 ' sh.Run cmd, intWindowStyle, bWaitOnReturn
 '   0     = hidden window (no console flash)

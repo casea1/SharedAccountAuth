@@ -28,10 +28,10 @@ SharedAccountAuth/
 ├─ config/
 │  └─ AuditConfig.psd1           # single source of truth for paths/tunables + SharedAccount
 ├─ deploy/
+│  ├─ Install-Audit.ps1          # one-command per-PC install: self-elevate, register tasks, preflight-validate
 │  ├─ Register-AuditTasks.ps1    # registers Logon + SessionUnlock tasks SCOPED to the shared account
 │  ├─ Unregister-AuditTasks.ps1  # removes both tasks
-│  ├─ Setup-SharePermissions.ps1 # admin-once: append-only ACLs on the log dir (run on the server)
-│  └─ Sign-Scripts.ps1           # Authenticode-sign all .ps1/.psd1
+│  └─ Setup-SharePermissions.ps1 # admin-once: append-only ACLs on the log dir (run on the server)
 ├─ sample/
 │  └─ roster.csv                 # LastName,FirstName,Username sample
 ├─ tasks/
@@ -131,28 +131,23 @@ Carried out offline. The repository is one self-contained tree; copy it whole.
 
    Leave `RosterCachePath`, `SpoolDir`, `DiagLogPath`, `StateDir` blank to derive them under `LocalRoot` (`C:\ProgramData\SharedAccountAuth`).
 
-6. **Sign the scripts** (AllSigned posture):
+6. **Run the installer.** It self-elevates (UAC prompt), registers both scheduled tasks scoped to the shared account, then runs a preflight that surfaces the otherwise-silent runtime failure modes:
 
    ```powershell
-   .\deploy\Sign-Scripts.ps1                       # auto-picks the first CodeSigning cert
-   .\deploy\Sign-Scripts.ps1 -Thumbprint <THUMB>   # or pin a specific cert
+   .\deploy\Install-Audit.ps1
+   # or pin the scoped account / a non-default config:
+   .\deploy\Install-Audit.ps1 -SharedAccount '.\LabShared'
+   # validate an existing install without changing anything:
+   .\deploy\Install-Audit.ps1 -ValidateOnly
    ```
 
-   Authenticode-signs every `*.ps1`/`*.psd1` under the repo root (or `-RepoRoot`). No internet timestamp (offline). The `.vbs` is not Authenticode-signed — AppLocker governs it.
+   Registration creates `SharedAccountAuth-Logon` (LogonTrigger) and `SharedAccountAuth-Unlock` (SessionStateChange → SessionUnlock), both with `UserId` = the resolved shared account, an `InteractiveToken` / `LeastPrivilege` principal, and writes reference XML to `tasks/`.
 
-7. **Ensure every roster `Username` exists as a local account** on this PC (the username is what `LogonUser` validates against the local SAM). A roster name with no matching local account can never authenticate here.
+   The **preflight** reports OK/WARN/FAIL for: config valid + `SharedAccount` set; install files present; the central `LogPath` UNC is reachable (else runtime spools locally); the roster loads and **every roster `Username` has a matching local account on this PC** — the username is what `LogonUser` validates against the local SAM, so anyone missing is listed and could never authenticate here; and both tasks are registered + enabled. Resolve any `FAIL` before relying on the prompt.
 
-8. **Register the tasks**, scoped to the shared account:
+   > **No signing.** The scripts are not Authenticode-signed — the launcher runs the `.ps1` with `-ExecutionPolicy Bypass` and AppLocker governs the install directory (see [STIG](#6-stig-considerations)). `Install-Audit.ps1` just orchestrates `deploy\Register-AuditTasks.ps1`, which you can still run directly (elevated) to register without the installer. To remove the tasks: `.\deploy\Unregister-AuditTasks.ps1`.
 
-   ```powershell
-   .\deploy\Register-AuditTasks.ps1
-   # or override the scoped account explicitly:
-   .\deploy\Register-AuditTasks.ps1 -SharedAccount '.\LabShared'
-   ```
-
-   This creates `SharedAccountAuth-Logon` (LogonTrigger) and `SharedAccountAuth-Unlock` (SessionStateChange → SessionUnlock), both with `UserId` = the resolved shared account, an `InteractiveToken` / `LeastPrivilege` principal, and writes reference XML to `tasks/`. To remove: `.\deploy\Unregister-AuditTasks.ps1`.
-
-9. **Test** as described in [section 7](#7-testing) before relying on it.
+7. **Test** as described in [section 7](#7-testing) before relying on it (the installer's preflight is a fast first check; the sign-out/in + unlock test confirms the end-to-end flow).
 
 ---
 
@@ -222,10 +217,10 @@ The value can be `MACHINE\name`, `.\name`, or a bare `name`; `Test-AuditIsShared
 
 ## 6. STIG considerations
 
-- **AllSigned + signing.** Scripts launch under `-ExecutionPolicy AllSigned`. Run `deploy/Sign-Scripts.ps1` to Authenticode-sign every `*.ps1`/`*.psd1` after any edit (including config edits — a changed psd1 must be re-signed). There is no internet timestamp (offline): signatures stop validating when the signing cert expires, so re-sign on cert rollover. `RemoteSigned` is the documented fallback if AllSigned is impractical.
+- **Execution policy + no signing.** The scripts are **not** Authenticode-signed. The launcher runs the prompt with `-ExecutionPolicy Bypass` ([`Launch-SharedAccountAuth.vbs`](src/Launch-SharedAccountAuth.vbs)), which also avoids the "Mark of the Web" block on a `.ps1` copied in from a ZIP/removable media (a blocked script = no prompt = silent failure). Because nothing is signed, **AppLocker is the integrity control** (next bullet), not execution policy. A machine-level GPO execution policy, if set, **overrides** the launcher's process-scope `Bypass`; if a site mandates signing, set the launcher token to `AllSigned`/`RemoteSigned` and sign the `*.ps1`/`*.psd1` yourself (re-signing after every edit, including the psd1).
 - **AppLocker pathing.** Two locations matter and should be covered by AppLocker rules:
   - the **local state root** `C:\ProgramData\SharedAccountAuth\` (cache/spool/diag/state) — chosen deliberately under ProgramData so it is path-addressable for AppLocker while being writable by the shared user;
-  - the **install/script directory** (e.g. `C:\Program Files\SharedAccountAuth\`) holding `src\`, including `Launch-SharedAccountAuth.vbs`. The `.vbs` is not Authenticode-signed, so AppLocker (script/path rules) is what governs it.
+  - the **install/script directory** (e.g. `C:\Program Files\SharedAccountAuth\`) holding `src\`, including the `.ps1` scripts and `Launch-SharedAccountAuth.vbs`. Nothing here is Authenticode-signed, so AppLocker (script/path rules) is the integrity control — whitelist this directory and block arbitrary scripts elsewhere.
 - **Least-privilege task principal.** Both tasks run with `<LogonType>InteractiveToken</LogonType>` and `<RunLevel>LeastPrivilege</RunLevel>` — an interactive session (≠ 0), **no elevation**.
 - **No audit-policy dependency for unlock.** Unlock detection uses the native Task Scheduler `SessionStateChangeTrigger`/`SessionUnlock`, so it does **not** depend on enabling Security audit policy or on event 4801. (4801 is documented only as an alternative.)
 - **4625 from failed validations.** Each wrong-password attempt calls `LogonUser` and so can generate a Security **4625** and bump the local bad-password count (see [section 3](#3-authentication-model)). This is expected and auditable under the "log failures, no cap" policy; correlate 4625s with the CSV's `AuthResult=Failure` rows.
@@ -324,7 +319,7 @@ Each line is `yyyy-MM-dd HH:mm:ss [LEVEL] [PID] message`. `Write-AuditDiag` neve
 | Rows are spooling, not landing centrally | Share unreachable or denied — diag shows "Central append failed; spooling". Restore `LogPath`; the next successful write flushes the spool (`Invoke-AuditSpoolFlush`, "Flushed spool file"). Inspect `C:\ProgramData\SharedAccountAuth\spool\`. |
 | "Roster unavailable" / Confirm stays disabled | Central `RosterPath` unreadable **and** no local cache yet (`Source=none`) — diag shows "Roster unavailable from central and cache". Fix share read access; once a central read succeeds the cache refreshes. Also verify the roster has `LastName,FirstName,Username` columns. |
 | Correct password rejected | Likely STIG network-logon denial interacting with logon types, or the roster `Username` has no matching **local** account on this PC. `Test-AuditCredential` already falls back NETWORK→CLEARTEXT→INTERACTIVE; confirm the local account exists and the password is the **local** account's password (`AuthDomain` should be `.`). |
-| Scripts won't run (signature) | AllSigned blocked an unsigned/edited file — re-run `Sign-Scripts.ps1` (re-sign after **any** edit, including the psd1), or check for an expired signing cert (no offline timestamp). |
+| Scripts won't run / blocked | A machine GPO execution policy can override the launcher's `Bypass`, or files copied from a ZIP carry "Mark of the Web". Check `Get-ExecutionPolicy -List`; clear MOTW with `Get-ChildItem -Recurse <install> \| Unblock-File`. |
 | Personal account getting locked out | Repeated wrong passwords increment the local bad-password count (4625). Expected under "no cap" policy; tune `RetryDelayMs` and the local lockout threshold. |
 
 ---
@@ -339,6 +334,5 @@ Documented honestly — do not assume more than the design provides.
 - **Uncapped attempts + lockout side effects.** Failed attempts are logged with no cap; each may emit a 4625 and increment the local bad-password count, so a local lockout policy can lock out a personal account. The `RetryDelayMs` delay only slows brute force.
 - **Multi-monitor coverage is rectangular.** The window spans the virtual screen bounds (`SystemParameters.VirtualScreen*`), which covers standard rectangular layouts; exotic non-rectangular monitor arrangements may leave gaps (the design notes per-monitor blocker windows as the alternative).
 - **At-least-once delivery, rare duplicates.** Spool flush is append-only and never reads the central log, so a crash between append and spool-delete can produce a **duplicate row**. Acceptable and visible to auditors; dedupe on review if needed.
-- **No timestamp on signatures.** Offline signing has no internet timestamp, so signatures fail validation once the signing certificate expires — re-sign on rollover.
 - **Roster trust.** Anyone who can write the central `roster.csv` controls the allow-list. Protect `RosterPath` write access; the shared account only needs read.
 - **Diag log is local.** Troubleshooting evidence lives on each PC under `C:\ProgramData\SharedAccountAuth\diag\`; it is not centralized.
