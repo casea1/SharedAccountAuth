@@ -57,6 +57,20 @@ Assert-Eq $ovr.Text 'SECRET//NOFORN' 'text override'
 Assert-Eq $ovr.Background '#FF990000' 'background override'
 Assert-Eq $ovr.Foreground '#FFFFFFFF' 'foreground still default'
 
+Write-Host 'Task 4: ConvertFrom-AuditRoster'
+$r1 = ConvertFrom-AuditRoster -Rows @([pscustomobject]@{Username='bnguyen'}, [pscustomobject]@{Username='asmith'})
+Assert-True $r1.Valid 'username-only roster valid'
+Assert-Eq @($r1.Entries).Count 2 'two entries'
+Assert-Eq @($r1.Entries)[0].Username 'asmith' 'sorted by username (asmith first)'
+Assert-Eq @($r1.Entries)[0].Display 'asmith' 'display defaults to username'
+Assert-Eq @($r1.Entries)[0].LastName '' 'lastname blank when absent'
+$r2 = ConvertFrom-AuditRoster -Rows @([pscustomobject]@{LastName='Smith';FirstName='Alice';Username='asmith'})
+Assert-Eq @($r2.Entries)[0].Display 'Smith, Alice' 'display uses names when present'
+$r3 = ConvertFrom-AuditRoster -Rows @([pscustomobject]@{Name='foo'})
+Assert-True (-not $r3.Valid) 'missing Username column => invalid'
+$r4 = ConvertFrom-AuditRoster -Rows @([pscustomobject]@{Username='dup'}, [pscustomobject]@{Username='dup'})
+Assert-Eq @($r4.Entries).Count 1 'deduped by username'
+
 Write-Host ''
 if ($script:Failures -gt 0) { Write-Host ("$($script:Failures) failure(s)") -ForegroundColor Red; exit 1 }
 Write-Host 'All tests passed.' -ForegroundColor Green

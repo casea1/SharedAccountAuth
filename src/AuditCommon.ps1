@@ -913,6 +913,51 @@ function Invoke-AuditSpoolFlush {
 }
 
 
+function ConvertFrom-AuditRoster {
+<#
+.SYNOPSIS Pure: turn parsed roster rows (Import-Csv output) into validated, sorted, deduped entries.
+.DESCRIPTION Requires ONLY a Username column. LastName/FirstName are used if present, else blank.
+             Display = "LastName, FirstName" when names exist, else the Username. Sorted by Username
+             (case-insensitive), deduped by Username. Blank-username rows are skipped. Returns
+             Valid=$false if the rows have no Username column (only determinable when rows exist).
+.OUTPUTS [pscustomobject] @{ Entries = @(@{LastName;FirstName;Username;Display}); Valid }
+#>
+    [CmdletBinding()]
+    param([AllowNull()][object[]] $Rows)
+
+    $rowsArr = @($Rows)
+    if ($rowsArr.Count -eq 0) {
+        return [pscustomobject]@{ Entries = @(); Valid = $true }   # empty roster, nothing to validate
+    }
+
+    $props = @($rowsArr[0].PSObject.Properties.Name)
+    $hasUser = $false
+    foreach ($p in $props) { if ($p -ieq 'Username') { $hasUser = $true; break } }
+    if (-not $hasUser) {
+        return [pscustomobject]@{ Entries = @(); Valid = $false }
+    }
+    $hasLast  = $false; foreach ($p in $props) { if ($p -ieq 'LastName')  { $hasLast  = $true; break } }
+    $hasFirst = $false; foreach ($p in $props) { if ($p -ieq 'FirstName') { $hasFirst = $true; break } }
+
+    $seen  = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $built = New-Object System.Collections.Generic.List[object]
+    foreach ($row in $rowsArr) {
+        $user = if ($null -ne $row.Username) { ([string]$row.Username).Trim() } else { '' }
+        if ([string]::IsNullOrWhiteSpace($user)) { continue }
+        if (-not $seen.Add($user)) { continue }
+        $last  = if ($hasLast  -and $null -ne $row.LastName)  { ([string]$row.LastName).Trim() }  else { '' }
+        $first = if ($hasFirst -and $null -ne $row.FirstName) { ([string]$row.FirstName).Trim() } else { '' }
+        $display = if (-not [string]::IsNullOrWhiteSpace($last) -or -not [string]::IsNullOrWhiteSpace($first)) {
+            ("{0}, {1}" -f $last, $first)
+        } else { $user }
+        $built.Add([pscustomobject]@{ LastName = $last; FirstName = $first; Username = $user; Display = $display })
+    }
+
+    $sorted = @($built | Sort-Object -Property Username)
+    return [pscustomobject]@{ Entries = $sorted; Valid = $true }
+}
+
+
 function Get-AuditRosterEntries {
 <#
 .SYNOPSIS
@@ -922,9 +967,9 @@ function Get-AuditRosterEntries {
     Tries Import-Csv on RosterPath. On success: refresh the local cache
     (best-effort copy) and return Source='central'. On failure: read the
     cache and return Source='cache'. If neither is available: Source='none'.
-    Validates that LastName, FirstName AND Username columns exist; ignores
-    blank rows; builds Display = "LastName, FirstName"; sorts by LastName
-    then FirstName and dedupes (by Username + Display).
+    Requires only a Username column; LastName/FirstName optional. Ignores
+    blank-username rows; builds Display via ConvertFrom-AuditRoster; sorts
+    by Username and dedupes by Username.
 .PARAMETER Config
     Resolved config hashtable (RosterPath, RosterCachePath).
 .OUTPUTS
@@ -983,51 +1028,16 @@ function Get-AuditRosterEntries {
         return [pscustomobject]@{ Entries = @(); Source = 'none' }
     }
 
-    # --- Validate columns (LastName, FirstName, Username all required). ---
-    $props = @()
-    if ($raw -is [System.Array]) {
-        if ($raw.Count -gt 0) { $props = $raw[0].PSObject.Properties.Name }
-    } else {
-        $props = $raw.PSObject.Properties.Name
-    }
-    if (($props -notcontains 'LastName') -or ($props -notcontains 'FirstName') -or ($props -notcontains 'Username')) {
-        Write-AuditDiag -Config $Config -Level Error -Message ("Roster missing LastName/FirstName/Username columns (source={0})." -f $source)
+    # --- Validate columns and build/sort/dedupe via pure helper. ---
+    $parsed = ConvertFrom-AuditRoster -Rows $raw
+    if (-not $parsed.Valid) {
+        Write-AuditDiag -Config $Config -Level Error -Message ("Roster missing Username column (source={0})." -f $source)
         return [pscustomobject]@{ Entries = @(); Source = 'none' }
     }
-
-    # --- Build, validate, sort, dedupe. ---
-    $seen     = New-Object 'System.Collections.Generic.HashSet[string]'
-    $built    = New-Object System.Collections.ArrayList
-    foreach ($row in @($raw)) {
-        $last  = if ($null -ne $row.LastName)  { ([string]$row.LastName).Trim() }  else { '' }
-        $first = if ($null -ne $row.FirstName) { ([string]$row.FirstName).Trim() } else { '' }
-        $user  = if ($null -ne $row.Username)  { ([string]$row.Username).Trim() }  else { '' }
-
-        # Ignore blank rows: require at least a last name and a username
-        # (the username is what gets authenticated against the local SAM).
-        if ([string]::IsNullOrWhiteSpace($last) -and [string]::IsNullOrWhiteSpace($first) -and [string]::IsNullOrWhiteSpace($user)) { continue }
-        if ([string]::IsNullOrWhiteSpace($last)) { continue }
-        if ([string]::IsNullOrWhiteSpace($user)) { continue }
-
-        $display = '{0}, {1}' -f $last, $first
-        # Dedupe on username + display (case-insensitive) so duplicate roster
-        # lines collapse but two people with the same display name but distinct
-        # usernames are both kept.
-        $key = ($user + '|' + $display).ToLowerInvariant()
-        if ($seen.Add($key)) {
-            [void]$built.Add([pscustomobject]@{
-                LastName  = $last
-                FirstName = $first
-                Username  = $user
-                Display   = $display
-            })
-        }
-    }
-
-    $sorted = $built | Sort-Object -Property LastName, FirstName
+    $built = $parsed.Entries
 
     return [pscustomobject]@{
-        Entries = @($sorted)
+        Entries = @($built)
         Source  = $source
     }
 }
