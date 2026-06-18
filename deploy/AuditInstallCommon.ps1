@@ -288,3 +288,24 @@ function Write-AuditConfigFile {
     [System.IO.File]::WriteAllText($ConfigPath, $sb.ToString(), (New-Object System.Text.UTF8Encoding($true)))
     return $backup
 }
+
+function Resolve-AuditConfigFromValues {
+<#
+.SYNOPSIS Resolves a config hashtable from in-memory values WITHOUT committing the real file.
+.DESCRIPTION Renders $Settings to a temp psd1, runs the authoritative Get-AuditConfig
+             resolver on it (filling derived cache/spool/diag/state paths), and returns
+             the result. Requires Get-AuditConfig (src\AuditCommon.ps1) to be dot-sourced.
+.PARAMETER Settings Hashtable of the collected field values.
+.OUTPUTS [hashtable] resolved config.
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][hashtable] $Settings)
+
+    $tmp = Join-Path $env:TEMP ('AuditCfg-' + [System.IO.Path]::GetRandomFileName() + '.psd1')
+    try {
+        [void](Write-AuditConfigFile -ConfigPath $tmp -Settings $Settings -NoBackup)
+        return (Get-AuditConfig -ConfigPath $tmp)
+    } finally {
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    }
+}

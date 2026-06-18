@@ -65,6 +65,17 @@ try {
     Remove-Item -LiteralPath $tmp, "$tmp.bak" -Force -ErrorAction SilentlyContinue
 }
 
+Write-Host ''
+Write-Host 'Task 3: Resolve-AuditConfigFromValues'
+$cfg = Resolve-AuditConfigFromValues -Settings @{
+    LogPath       = '\\srv\share\audit\access_log.csv'
+    RosterPath    = '\\srv\share\audit\roster.csv'
+    SharedAccount = '.\LabShared'
+}
+Assert-Eq $cfg.SharedAccount '.\LabShared' 'resolved SharedAccount preserved'
+Assert-True (-not [string]::IsNullOrWhiteSpace($cfg.RosterCachePath)) 'derived RosterCachePath filled'
+Assert-True ($cfg.RosterCachePath -like '*\cache\roster.csv') 'derived cache path shape'
+
 if ($script:Failures -gt 0) { Write-Host ("$($script:Failures) failure(s)") -ForegroundColor Red; exit 1 }
 Write-Host 'All tests passed.' -ForegroundColor Green
 exit 0
