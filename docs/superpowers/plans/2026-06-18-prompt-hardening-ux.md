@@ -730,7 +730,10 @@ Append to `tests/Test-AuditLockdown.ps1` before the tally:
 ```powershell
 Write-Host 'Task 6: prompt XAML + named controls'
 $promptPath = Join-Path $RepoRoot 'src\SharedAccountAuth.ps1'
-. $promptPath   # must NOT run the prompt body (guarded) - only define functions
+# Pass -EventType (it is a MANDATORY param; omitting it would prompt/hang). The
+# dot-source guard (InvocationName -eq '.') still skips the prompt body, so this
+# only defines functions like Get-AuditPromptXaml.
+. $promptPath -EventType Logon
 Assert-True ([bool](Get-Command Get-AuditPromptXaml -ErrorAction SilentlyContinue)) 'Get-AuditPromptXaml defined'
 Add-Type -AssemblyName PresentationFramework
 $w = [System.Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml](Get-AuditPromptXaml))))
