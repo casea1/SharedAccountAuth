@@ -35,6 +35,28 @@ Assert-True ( (Test-AuditShouldTryNextLogonType -Win32Error 1385))     '1385 (ty
 Assert-True ( (Test-AuditShouldTryNextLogonType -Win32Error 0))        '0 => try next'
 Assert-True ( (Test-AuditShouldTryNextLogonType -Win32Error 5))        'access denied => try next'
 
+Write-Host 'Task 3: Get-AuditClassification'
+$s = Get-AuditClassification -Level 'SECRET'
+Assert-True $s.Show 'SECRET shown'
+Assert-Eq $s.Text 'SECRET' 'SECRET text defaults to level'
+Assert-Eq $s.Background '#FFC8102E' 'SECRET red'
+Assert-Eq $s.Foreground '#FFFFFFFF' 'SECRET white text'
+$ts = Get-AuditClassification -Level 'top secret'
+Assert-Eq $ts.Background '#FFFF8C00' 'TOP SECRET orange (case-insensitive)'
+Assert-Eq $ts.Foreground '#FF000000' 'TOP SECRET black text'
+$cui = Get-AuditClassification -Level 'CUI'
+Assert-Eq $cui.Background '#FF512B85' 'CUI purple'
+$u = Get-AuditClassification -Level 'UNCLASSIFIED'
+Assert-Eq $u.Background '#FF007A33' 'UNCLASSIFIED green'
+$blank = Get-AuditClassification -Level ''
+Assert-True (-not $blank.Show) 'blank level hidden'
+$bogus = Get-AuditClassification -Level 'NOPE'
+Assert-True (-not $bogus.Show) 'unknown level hidden'
+$ovr = Get-AuditClassification -Level 'SECRET' -Text 'SECRET//NOFORN' -Background '#FF990000'
+Assert-Eq $ovr.Text 'SECRET//NOFORN' 'text override'
+Assert-Eq $ovr.Background '#FF990000' 'background override'
+Assert-Eq $ovr.Foreground '#FFFFFFFF' 'foreground still default'
+
 Write-Host ''
 if ($script:Failures -gt 0) { Write-Host ("$($script:Failures) failure(s)") -ForegroundColor Red; exit 1 }
 Write-Host 'All tests passed.' -ForegroundColor Green

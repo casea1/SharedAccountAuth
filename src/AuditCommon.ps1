@@ -1105,3 +1105,40 @@ function Test-AuditDebounce {
 
     return $false
 }
+
+
+function Get-AuditClassification {
+<#
+.SYNOPSIS Resolve a classification banner's text + colors from a level, with optional overrides.
+.DESCRIPTION Maps a US classification level (case-insensitive) to standard banner colors.
+             Non-blank -Text/-Foreground/-Background override the defaults. Show=$false when
+             the level is blank or unknown (banner hidden). Colors are WPF ARGB hex (#AARRGGBB).
+.OUTPUTS [pscustomobject] @{ Text; Foreground; Background; Show }
+#>
+    [CmdletBinding()]
+    param(
+        [string] $Level,
+        [string] $Text,
+        [string] $Foreground,
+        [string] $Background
+    )
+    $table = @{
+        'UNCLASSIFIED' = @{ Bg = '#FF007A33'; Fg = '#FFFFFFFF' }   # green
+        'CUI'          = @{ Bg = '#FF512B85'; Fg = '#FFFFFFFF' }   # purple
+        'CONFIDENTIAL' = @{ Bg = '#FF0033A0'; Fg = '#FFFFFFFF' }   # blue
+        'SECRET'       = @{ Bg = '#FFC8102E'; Fg = '#FFFFFFFF' }   # red
+        'TOP SECRET'   = @{ Bg = '#FFFF8C00'; Fg = '#FF000000' }   # orange, black text
+    }
+    $key = ''
+    if (-not [string]::IsNullOrWhiteSpace($Level)) { $key = $Level.Trim().ToUpperInvariant() }
+
+    if ([string]::IsNullOrEmpty($key) -or -not $table.ContainsKey($key)) {
+        return [pscustomobject]@{ Text = ''; Foreground = '#FFFFFFFF'; Background = '#FF000000'; Show = $false }
+    }
+
+    $def = $table[$key]
+    $fg = if (-not [string]::IsNullOrWhiteSpace($Foreground)) { $Foreground } else { $def.Fg }
+    $bg = if (-not [string]::IsNullOrWhiteSpace($Background)) { $Background } else { $def.Bg }
+    $tx = if (-not [string]::IsNullOrWhiteSpace($Text))       { $Text }       else { $key }
+    return [pscustomobject]@{ Text = $tx; Foreground = $fg; Background = $bg; Show = $true }
+}
