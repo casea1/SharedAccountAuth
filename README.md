@@ -29,6 +29,8 @@ SharedAccountAuth/
 │  └─ AuditConfig.psd1           # single source of truth for paths/tunables + SharedAccount
 ├─ deploy/
 │  ├─ Install-Audit.ps1          # one-command per-PC install: self-elevate, register tasks, preflight-validate
+│  ├─ Install-Audit-GUI.ps1      # WPF single-pane front-end over Install-Audit (collect paths, preview roster, install)
+│  ├─ AuditInstallCommon.ps1     # shared install-time library (preflight, local-account check, config writer)
 │  ├─ Register-AuditTasks.ps1    # registers Logon + SessionUnlock tasks SCOPED to the shared account
 │  ├─ Unregister-AuditTasks.ps1  # removes both tasks
 │  └─ Setup-SharePermissions.ps1 # admin-once: append-only ACLs on the log dir (run on the server)
@@ -146,6 +148,8 @@ Carried out offline. The repository is one self-contained tree; copy it whole.
    The **preflight** reports OK/WARN/FAIL for: config valid + `SharedAccount` set; install files present; the central `LogPath` UNC is reachable (else runtime spools locally); the roster loads and **every roster `Username` has a matching local account on this PC** — the username is what `LogonUser` validates against the local SAM, so anyone missing is listed and could never authenticate here; and both tasks are registered + enabled. Resolve any `FAIL` before relying on the prompt.
 
    > **No signing.** The scripts are not Authenticode-signed — the launcher runs the `.ps1` with `-ExecutionPolicy Bypass` and AppLocker governs the install directory (see [STIG](#6-stig-considerations)). `Install-Audit.ps1` just orchestrates `deploy\Register-AuditTasks.ps1`, which you can still run directly (elevated) to register without the installer. To remove the tasks: `.\deploy\Unregister-AuditTasks.ps1`.
+
+   **Prefer a GUI?** Run `.\deploy\Install-Audit-GUI.ps1` instead — a single-pane window that self-elevates, prefills from the current config, lets you Test each path and preview the roster (read-only, with a "has a local account here?" column), then writes the config (backing up the prior file to `AuditConfig.psd1.bak`) and registers the tasks. It runs the same preflight as the CLI. The CLI remains for scripted/silent installs.
 
 7. **Test** as described in [section 7](#7-testing) before relying on it (the installer's preflight is a fast first check; the sign-out/in + unlock test confirms the end-to-end flow).
 
