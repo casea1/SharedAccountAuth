@@ -71,6 +71,150 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 # =====================================================================
+# Get-AuditPromptXaml — the WPF window layout, factored out of the main
+# body so it is DEFINED ON DOT-SOURCE (outside the startup guard below).
+# This lets the test suite load and inspect the XAML / named controls
+# WITHOUT running the startup flow or showing the window.
+#
+# Single-quoted here-string => NO PowerShell interpolation; every piece
+# of dynamic text/colour is set from code-behind by x:Name. Structure:
+#   DockPanel
+#     TopBanner    (classification bar, docked Top, collapsed by default)
+#     BottomBanner (classification bar, docked Bottom, collapsed)
+#     Grid -> centered card Border -> StackPanel
+#       LogoImage (collapsed until a logo loads), titles, event/computer,
+#       NameCombo (in a Grid with a watermark overlay), PwBox, StatusText,
+#       ConfirmButton (templated so the disabled state reads as a button).
+# WindowStyle=None / ResizeMode=NoResize / Topmost / ShowInTaskbar=False;
+# bounds are set in code from the VIRTUAL SCREEN (not Maximized).
+# =====================================================================
+function Get-AuditPromptXaml {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+    return @'
+<Window
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    WindowStyle="None"
+    ResizeMode="NoResize"
+    Topmost="True"
+    ShowInTaskbar="False"
+    WindowStartupLocation="Manual"
+    WindowState="Normal"
+    Background="#FF101418"
+    AllowsTransparency="False">
+  <DockPanel>
+    <Border x:Name="TopBanner" DockPanel.Dock="Top" Background="#FFC8102E" Visibility="Collapsed" Padding="0,4">
+      <TextBlock x:Name="TopBannerText" Text="" Foreground="#FFFFFFFF" FontWeight="Bold" FontSize="14" HorizontalAlignment="Center"/>
+    </Border>
+    <Border x:Name="BottomBanner" DockPanel.Dock="Bottom" Background="#FFC8102E" Visibility="Collapsed" Padding="0,4">
+      <TextBlock x:Name="BottomBannerText" Text="" Foreground="#FFFFFFFF" FontWeight="Bold" FontSize="14" HorizontalAlignment="Center"/>
+    </Border>
+    <Grid>
+      <Border
+          HorizontalAlignment="Center"
+          VerticalAlignment="Center"
+          Background="#FF1B2129"
+          BorderBrush="#FF3A4656"
+          BorderThickness="1"
+          CornerRadius="10"
+          Padding="36"
+          Width="640">
+        <Border.Effect>
+          <DropShadowEffect BlurRadius="28" ShadowDepth="0" Opacity="0.55" Color="#FF000000"/>
+        </Border.Effect>
+        <StackPanel>
+          <Image x:Name="LogoImage" MaxHeight="56" Stretch="Uniform" HorizontalAlignment="Left" Margin="0,0,0,12" Visibility="Collapsed"/>
+          <TextBlock x:Name="TitleText"
+                     Text="Workstation Access"
+                     Foreground="#FFFFFFFF"
+                     FontSize="26"
+                     FontWeight="SemiBold"
+                     TextWrapping="Wrap"/>
+          <TextBlock x:Name="SubtitleText"
+                     Text="Select your name and enter your password."
+                     Foreground="#FFB7C0CC"
+                     FontSize="15"
+                     Margin="0,10,0,0"
+                     TextWrapping="Wrap"/>
+          <Grid Margin="0,22,0,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto"/>
+              <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="Event:" Foreground="#FF8A97A6" FontSize="13" Margin="0,0,10,0"/>
+            <TextBlock x:Name="EventText" Grid.Column="1" Text="" Foreground="#FFD7DEE6" FontSize="13"/>
+          </Grid>
+          <Grid Margin="0,4,0,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto"/>
+              <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="Computer:" Foreground="#FF8A97A6" FontSize="13" Margin="0,0,10,0"/>
+            <TextBlock x:Name="ComputerText" Grid.Column="1" Text="" Foreground="#FFD7DEE6" FontSize="13"/>
+          </Grid>
+
+          <TextBlock Text="Your name" Foreground="#FFB7C0CC" FontSize="14" Margin="0,24,0,6"/>
+          <Grid>
+            <ComboBox x:Name="NameCombo" IsEditable="True" IsTextSearchEnabled="True" StaysOpenOnEdit="True" FontSize="18" Height="40" BorderBrush="#FF3A4656" BorderThickness="1"/>
+            <TextBlock x:Name="NameWatermark" Text="— select your name —" Foreground="#FF6B7480" FontSize="15" Margin="10,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+          </Grid>
+
+          <TextBlock Text="Your password" Foreground="#FFB7C0CC" FontSize="14" Margin="0,18,0,6"/>
+          <PasswordBox x:Name="PwBox"
+                       IsEnabled="False"
+                       FontSize="18"
+                       Height="40"
+                       Padding="6,8,6,8"/>
+
+          <TextBlock x:Name="StatusText"
+                     Text=""
+                     Foreground="#FFFF8A8A"
+                     FontSize="14"
+                     Margin="0,16,0,0"
+                     TextWrapping="Wrap"
+                     MinHeight="20"/>
+
+          <Button x:Name="ConfirmButton" Content="Confirm" IsEnabled="False" FontSize="17" Height="44" Margin="0,18,0,0" Foreground="#FFFFFFFF" BorderThickness="0">
+            <Button.Style>
+              <Style TargetType="Button">
+                <Setter Property="Template">
+                  <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                      <Border x:Name="bd" CornerRadius="6" Background="#FF2D6CDF" BorderBrush="#FF3A4656" BorderThickness="0">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                      </Border>
+                      <ControlTemplate.Triggers>
+                        <Trigger Property="IsEnabled" Value="False">
+                          <Setter TargetName="bd" Property="Background" Value="#FF33404F"/>
+                          <Setter TargetName="bd" Property="BorderThickness" Value="1"/>
+                          <Setter Property="Foreground" Value="#FF8A97A6"/>
+                        </Trigger>
+                      </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                  </Setter.Value>
+                </Setter>
+              </Style>
+            </Button.Style>
+          </Button>
+        </StackPanel>
+      </Border>
+    </Grid>
+  </DockPanel>
+</Window>
+'@
+}
+
+# =====================================================================
+# STARTUP GUARD: when this script is DOT-SOURCED (InvocationName -eq '.'),
+# e.g. by the test suite to load Get-AuditPromptXaml, we DEFINE functions
+# only and run NOTHING below — no config load, no self-check, no window,
+# no ShowDialog. When invoked normally the whole startup flow runs.
+# =====================================================================
+if ($MyInvocation.InvocationName -ne '.') {
+
+# =====================================================================
 # Startup step 0: dot-source the shared library via $PSScriptRoot, then
 # resolve config. Everything is wrapped so a fatal startup error becomes
 # a diag breadcrumb (best-effort) and a clean exit — never a crash to an
@@ -79,6 +223,7 @@ $ErrorActionPreference = 'Stop'
 $cfg = $null
 try {
     . (Join-Path $PSScriptRoot 'AuditCommon.ps1')
+    . (Join-Path $PSScriptRoot 'AuditLockdown.ps1')
     $cfg = Get-AuditConfig -ConfigPath $ConfigPath
 }
 catch {
@@ -143,104 +288,13 @@ try {
     Add-Type -AssemblyName System.Xaml
 
     # -----------------------------------------------------------------
-    # XAML layout (single-quoted here-string — no PS interpolation; all
-    # dynamic text is set from code-behind by x:Name). WindowStyle=None,
-    # ResizeMode=NoResize, Topmost, ShowInTaskbar=False. Bounds are set in
-    # code from the VIRTUAL SCREEN (NOT WindowState=Maximized, which snaps
-    # to a single monitor). A centered card holds the controls.
+    # XAML layout: factored into Get-AuditPromptXaml (defined at the top,
+    # outside the startup guard) so the test suite can load it without
+    # running this body. All dynamic text/colour is set from code-behind
+    # by x:Name. Bounds are set in code from the VIRTUAL SCREEN (NOT
+    # WindowState=Maximized, which snaps to a single monitor).
     # -----------------------------------------------------------------
-    $xaml = @'
-<Window
-    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    WindowStyle="None"
-    ResizeMode="NoResize"
-    Topmost="True"
-    ShowInTaskbar="False"
-    WindowStartupLocation="Manual"
-    WindowState="Normal"
-    Background="#FF101418"
-    AllowsTransparency="False">
-  <Grid>
-    <Border
-        HorizontalAlignment="Center"
-        VerticalAlignment="Center"
-        Background="#FF1B2129"
-        BorderBrush="#FF3A4656"
-        BorderThickness="1"
-        CornerRadius="10"
-        Padding="36"
-        Width="640">
-      <Border.Effect>
-        <DropShadowEffect BlurRadius="28" ShadowDepth="0" Opacity="0.55" Color="#FF000000"/>
-      </Border.Effect>
-      <StackPanel>
-        <TextBlock x:Name="TitleText"
-                   Text="Workstation Access"
-                   Foreground="#FFFFFFFF"
-                   FontSize="26"
-                   FontWeight="SemiBold"
-                   TextWrapping="Wrap"/>
-        <TextBlock x:Name="SubtitleText"
-                   Text="Select your name and enter your password."
-                   Foreground="#FFB7C0CC"
-                   FontSize="15"
-                   Margin="0,10,0,0"
-                   TextWrapping="Wrap"/>
-        <Grid Margin="0,22,0,0">
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="Auto"/>
-            <ColumnDefinition Width="*"/>
-          </Grid.ColumnDefinitions>
-          <TextBlock Grid.Column="0" Text="Event:" Foreground="#FF8A97A6" FontSize="13" Margin="0,0,10,0"/>
-          <TextBlock x:Name="EventText" Grid.Column="1" Text="" Foreground="#FFD7DEE6" FontSize="13"/>
-        </Grid>
-        <Grid Margin="0,4,0,0">
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="Auto"/>
-            <ColumnDefinition Width="*"/>
-          </Grid.ColumnDefinitions>
-          <TextBlock Grid.Column="0" Text="Computer:" Foreground="#FF8A97A6" FontSize="13" Margin="0,0,10,0"/>
-          <TextBlock x:Name="ComputerText" Grid.Column="1" Text="" Foreground="#FFD7DEE6" FontSize="13"/>
-        </Grid>
-
-        <TextBlock Text="Your name" Foreground="#FFB7C0CC" FontSize="14" Margin="0,24,0,6"/>
-        <ComboBox x:Name="NameCombo"
-                  IsEditable="True"
-                  IsTextSearchEnabled="True"
-                  StaysOpenOnEdit="True"
-                  FontSize="18"
-                  Height="40"/>
-
-        <TextBlock Text="Your password" Foreground="#FFB7C0CC" FontSize="14" Margin="0,18,0,6"/>
-        <PasswordBox x:Name="PwBox"
-                     IsEnabled="False"
-                     FontSize="18"
-                     Height="40"
-                     Padding="6,8,6,8"/>
-
-        <TextBlock x:Name="StatusText"
-                   Text=""
-                   Foreground="#FFFF8A8A"
-                   FontSize="14"
-                   Margin="0,16,0,0"
-                   TextWrapping="Wrap"
-                   MinHeight="20"/>
-
-        <Button x:Name="ConfirmButton"
-                Content="Confirm"
-                IsEnabled="False"
-                FontSize="17"
-                Height="44"
-                Margin="0,18,0,0"
-                Background="#FF2D6CDF"
-                Foreground="#FFFFFFFF"
-                BorderThickness="0"/>
-      </StackPanel>
-    </Border>
-  </Grid>
-</Window>
-'@
+    $xaml = Get-AuditPromptXaml
 
     # Parse the XAML into a live Window object.
     $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
@@ -258,6 +312,14 @@ try {
     $statusText    = $window.FindName('StatusText')
     $confirmButton = $window.FindName('ConfirmButton')
 
+    # New (Task 6) controls: classification bars, logo, name watermark.
+    $topBanner       = $window.FindName('TopBanner')
+    $topBannerText   = $window.FindName('TopBannerText')
+    $bottomBanner    = $window.FindName('BottomBanner')
+    $bottomBannerText= $window.FindName('BottomBannerText')
+    $logoImage       = $window.FindName('LogoImage')
+    $nameWatermark   = $window.FindName('NameWatermark')
+
     # -----------------------------------------------------------------
     # Static text from config + runtime context.
     # -----------------------------------------------------------------
@@ -266,6 +328,50 @@ try {
     $eventText.Text    = $EventType
     $computerText.Text = $computerName
     $window.Title      = [string]$cfg.AppName
+
+    # -----------------------------------------------------------------
+    # Classification banner bars (spec §9). Resolve text+colours from the
+    # configured level (with optional overrides) and, only when Show, paint
+    # both bars and make them visible. A blank/unknown level leaves them
+    # collapsed. Wrapped so a bad colour string degrades to no banner
+    # rather than crashing the prompt to an unlocked desktop.
+    # -----------------------------------------------------------------
+    try {
+        $cls = Get-AuditClassification -Level ([string]$cfg.ClassificationLevel) `
+                                       -Text ([string]$cfg.ClassificationText) `
+                                       -Foreground ([string]$cfg.ClassificationForeground) `
+                                       -Background ([string]$cfg.ClassificationBackground)
+        if ($cls.Show) {
+            $bg = [System.Windows.Media.BrushConverter]::new().ConvertFromString($cls.Background)
+            $fg = [System.Windows.Media.BrushConverter]::new().ConvertFromString($cls.Foreground)
+            $topBanner.Background = $bg; $bottomBanner.Background = $bg
+            $topBannerText.Foreground = $fg; $bottomBannerText.Foreground = $fg
+            $topBannerText.Text = $cls.Text; $bottomBannerText.Text = $cls.Text
+            $topBanner.Visibility = 'Visible'; $bottomBanner.Visibility = 'Visible'
+        }
+    } catch { }   # bad classification colour/value => no banner, no crash
+
+    # -----------------------------------------------------------------
+    # Logo (spec §9). Load from LogoPath; blank => the bundled GE emblem
+    # under ..\assets. Decode with OnLoad caching so the file handle is not
+    # held. Any failure (missing/unreadable/bad image) collapses the logo —
+    # we never throw out to an unlocked desktop over a cosmetic asset.
+    # -----------------------------------------------------------------
+    try {
+        $logoPath = [string]$cfg.LogoPath
+        if ([string]::IsNullOrWhiteSpace($logoPath)) {
+            $logoPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'assets\GE-Aerospace-Emblem.png'
+        }
+        if (Test-Path -LiteralPath $logoPath) {
+            $bmp = New-Object System.Windows.Media.Imaging.BitmapImage
+            $bmp.BeginInit()
+            $bmp.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+            $bmp.UriSource = New-Object System.Uri((Resolve-Path -LiteralPath $logoPath).Path)
+            $bmp.EndInit()
+            $logoImage.Source = $bmp
+            $logoImage.Visibility = 'Visible'
+        }
+    } catch { }   # missing/unreadable logo => no logo, no crash
 
     # -----------------------------------------------------------------
     # Cover ALL monitors via the VIRTUAL SCREEN. We do NOT use
@@ -290,21 +396,25 @@ try {
     $script:NameFilterText    = ''       # current substring filter for the name dropdown
     $script:RetryThrottled    = $false   # true during the post-failure delay; blocks input re-enable
 
-    # Build a fast lookup: Display string -> roster entry. Display values
-    # are the ComboBox items; a name is "valid" only on an EXACT match.
+    # Build a fast lookup: USERNAME string -> roster entry (Task 6: the
+    # dropdown shows USERNAMES, not "Last, First" displays). A name is
+    # "valid" only on an EXACT username match. We key the dictionary and
+    # build the item list from the SAME sorted pass so they stay in sync;
+    # entries are deduped on first occurrence (the roster is already deduped
+    # by Username upstream, but we guard anyway). The variable keeps its old
+    # name ($displayToEntry) so $updateState/$onNameTextChanged — which look
+    # up $nameCombo.Text against it — keep working unchanged, now on usernames.
     $displayToEntry = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($e in $entries) {
-        if (-not $displayToEntry.ContainsKey($e.Display)) {
-            $displayToEntry[$e.Display] = $e
-        }
+    $displayList = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($e in ($entries | Sort-Object -Property Username)) {
+        $u = [string]$e.Username
+        if (-not $displayToEntry.ContainsKey($u)) { $displayToEntry[$u] = $e; $displayList.Add($u) }
     }
 
     # Populate the ComboBox via an ICollectionView so we can apply a LIVE
     # case-insensitive SUBSTRING filter as the user types (spec §9 type-to-
     # filter). WPF's IsTextSearchEnabled only does PREFIX auto-complete; it
     # does NOT narrow the dropdown, so we filter the view ourselves.
-    $displayList = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($e in $entries) { $displayList.Add([string]$e.Display) }
 
     $nameView = [System.Windows.Data.CollectionViewSource]::GetDefaultView($displayList)
     $nameView.Filter = [System.Predicate[object]] {
@@ -338,6 +448,11 @@ try {
     #     is non-empty.
     # =================================================================
     $updateState = {
+        # Watermark (— select your name —) shows only while the name box is
+        # empty. Updated first so it tracks the text even on the roster-
+        # unavailable early-return path below.
+        $nameWatermark.Visibility = if ([string]::IsNullOrEmpty([string]$nameCombo.Text)) { 'Visible' } else { 'Collapsed' }
+
         if (-not $script:RosterAvailable) { return }
 
         # The editable ComboBox exposes the typed/selected text via .Text.
@@ -533,11 +648,18 @@ try {
     # LOCKDOWN HANDLERS (spec §9).
     # =================================================================
     # Closing: refuse unless we explicitly allowed it (successful auth).
+    # When we DO allow the close, tear down the hardening (remove the
+    # keyboard hook + restore the Task Manager policy) so the desktop is
+    # left in its pre-lock state. Both helpers are idempotent and never
+    # throw; the outer finally calls them again as a belt-and-braces backstop.
     $window.Add_Closing({
         param($s, $e)
         if (-not $script:AllowClose) {
             $e.Cancel = $true
+            return
         }
+        try { Remove-AuditKeyboardHook } catch { }
+        try { Restore-AuditTaskMgrPolicy -Config $cfg } catch { }
     })
 
     # KeyDown: swallow Esc and Alt+F4; Enter triggers Confirm only when
@@ -584,7 +706,13 @@ try {
     })
 
     # Loaded: activate and focus the ComboBox (or surface roster-unavailable
-    # focus to nothing actionable).
+    # focus to nothing actionable). Once the window is up and owns the
+    # screen, ENGAGE the hardening: disable Task Manager (HKCU policy) and
+    # install the low-level keyboard hook that swallows the shell hotkeys
+    # (Win, Win+R, Alt+Tab, Ctrl+Esc, Ctrl+Shift+Esc). Both are wrapped so a
+    # failure to harden degrades to "covered but not hardened" — it never
+    # crashes us to an unlocked desktop. Teardown happens in Closing + the
+    # outer finally.
     $window.Add_Loaded({
         param($s, $e)
         try { [void]$window.Activate() } catch { }
@@ -593,16 +721,28 @@ try {
                 [void]$nameCombo.Focus()
             }
         } catch { }
-        # Initial enabled-state pass.
+        # Initial enabled-state pass (also sets the name watermark).
         & $updateState
+        try { Set-AuditTaskMgrPolicy -Config $cfg } catch { }
+        try { [void](Install-AuditKeyboardHook) } catch { }
     })
 
     # =================================================================
     # Show the window MODALLY. ShowDialog() blocks until AllowClose lets
     # Closing through. Any exception here must NOT crash to an unlocked
     # desktop — it is caught by the outer try/catch which logs and exits.
+    # The finally is the AUTHORITATIVE hardening teardown: whether we close
+    # cleanly, throw, or are torn down early, the keyboard hook is removed
+    # and the Task Manager policy is restored. Both helpers are idempotent,
+    # so calling them here as well as in the Closing handler is safe.
     # =================================================================
-    [void]$window.ShowDialog()
+    try {
+        [void]$window.ShowDialog()
+    }
+    finally {
+        try { Remove-AuditKeyboardHook } catch { }
+        try { Restore-AuditTaskMgrPolicy -Config $cfg } catch { }
+    }
 
     Write-AuditDiag -Config $cfg -Level Info -Message ("prompt closed cleanly (event={0})" -f $EventType)
 }
@@ -613,9 +753,16 @@ catch {
     # at this point) and exit cleanly. We DELIBERATELY do not rethrow:
     # surfacing an error to the hidden console would just leave the desktop
     # unlocked with no record, which is worse than failing closed-but-quiet.
+    # Tear down the hardening here too (idempotent) in case we threw BEFORE
+    # ShowDialog's finally ran — e.g. a hook installed in Loaded then an
+    # exception elsewhere — so we never leave the hook/policy engaged.
     # =================================================================
+    try { Remove-AuditKeyboardHook } catch { }
+    try { Restore-AuditTaskMgrPolicy -Config $cfg } catch { }
     try {
         Write-AuditDiag -Config $cfg -Level Error -Message ("Unhandled prompt error (no password logged): {0}" -f $_.Exception.Message)
     } catch { }
     return
 }
+
+}   # end startup guard: if ($MyInvocation.InvocationName -ne '.')
