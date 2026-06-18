@@ -76,6 +76,22 @@ Assert-Eq $cfg.SharedAccount '.\LabShared' 'resolved SharedAccount preserved'
 Assert-True (-not [string]::IsNullOrWhiteSpace($cfg.RosterCachePath)) 'derived RosterCachePath filled'
 Assert-True ($cfg.RosterCachePath -like '*\cache\roster.csv') 'derived cache path shape'
 
+Write-Host ''
+Write-Host 'Task 4: GUI XAML + scaffold'
+$guiPath = Join-Path $RepoRoot 'deploy\Install-Audit-GUI.ps1'
+Assert-True (Test-Path -LiteralPath $guiPath) 'Install-Audit-GUI.ps1 exists'
+# Dot-source must NOT trigger the interactive flow (guarded by InvocationName).
+. $guiPath
+Assert-True ([bool](Get-Command Get-AuditGuiXaml -ErrorAction SilentlyContinue)) 'Get-AuditGuiXaml defined'
+Add-Type -AssemblyName PresentationFramework
+$xaml = Get-AuditGuiXaml
+$reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
+$win = [System.Windows.Markup.XamlReader]::Load($reader)
+Assert-True ($null -ne $win) 'XAML loads into a Window'
+foreach ($name in 'LogBox','RosterBox','AccountBox','RosterGrid','ResultGrid','ValidateBtn','InstallBtn','CloseBtn','StatusText') {
+    Assert-True ($null -ne $win.FindName($name)) "control '$name' present"
+}
+
 if ($script:Failures -gt 0) { Write-Host ("$($script:Failures) failure(s)") -ForegroundColor Red; exit 1 }
 Write-Host 'All tests passed.' -ForegroundColor Green
 exit 0
