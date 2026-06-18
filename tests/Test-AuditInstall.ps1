@@ -34,6 +34,37 @@ $set = Get-LocalUserNameSet
 Assert-True ($set -is [System.Collections.Generic.HashSet[string]]) 'Get-LocalUserNameSet returns a HashSet'
 
 Write-Host ''
+Write-Host 'Task 2: Write-AuditConfigFile'
+$tmp = Join-Path $env:TEMP ('audcfg-' + [System.IO.Path]::GetRandomFileName() + '.psd1')
+try {
+    $settings = @{
+        LogPath       = '\\srv\share\audit\access_log.csv'
+        RosterPath    = '\\srv\share\audit\roster.csv'
+        SharedAccount = ".\Lab'Shared"        # apostrophe must be escaped
+        RetryDelayMs  = 2500                    # numeric must stay numeric
+        WindowTitle   = "O'Brien's window"
+    }
+    $bak = Write-AuditConfigFile -ConfigPath $tmp -Settings $settings -NoBackup
+    Assert-True ($null -eq $bak) 'no backup returned when target absent'
+    $read = Import-PowerShellDataFile -LiteralPath $tmp
+    Assert-Eq $read.LogPath       $settings.LogPath        'round-trip LogPath'
+    Assert-Eq $read.SharedAccount ".\Lab'Shared"           'round-trip apostrophe SharedAccount'
+    Assert-Eq $read.WindowTitle   "O'Brien's window"       'round-trip apostrophe WindowTitle'
+    Assert-Eq $read.RetryDelayMs  2500                     'round-trip numeric value'
+    Assert-True ($read.RetryDelayMs -is [int])             'numeric stays [int]'
+    Assert-Eq $read.AuthDomain    '.'                      'unspecified key falls to default'
+
+    # backup behaviour
+    Set-Content -LiteralPath $tmp -Value "@{ LogPath = 'old' }" -Encoding UTF8
+    $bak2 = Write-AuditConfigFile -ConfigPath $tmp -Settings @{ LogPath = 'new' }
+    Assert-Eq $bak2 "$tmp.bak" 'backup path returned'
+    Assert-True (Test-Path -LiteralPath "$tmp.bak") 'backup file created'
+    Assert-Eq (Import-PowerShellDataFile -LiteralPath "$tmp.bak").LogPath 'old' 'backup holds old value'
+    Assert-Eq (Import-PowerShellDataFile -LiteralPath $tmp).LogPath       'new' 'target holds new value'
+} finally {
+    Remove-Item -LiteralPath $tmp, "$tmp.bak" -Force -ErrorAction SilentlyContinue
+}
+
 if ($script:Failures -gt 0) { Write-Host ("$($script:Failures) failure(s)") -ForegroundColor Red; exit 1 }
 Write-Host 'All tests passed.' -ForegroundColor Green
 exit 0
