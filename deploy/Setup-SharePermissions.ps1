@@ -236,114 +236,26 @@ function Test-IsElevated {
 # =====================================================================
 
 if (-not (Test-IsElevated)) {
-    Write-Warning 'This script must be run ELEVATED (Run as administrator). Setting NTFS ACLs requires admin rights.'
-    throw 'Not elevated — aborting before touching any ACLs.'
-}
-
-# Resolve / create the target directory. We secure the DIRECTORY; the log
-# file inherits from it (so it is protected even before it first exists).
-$dirExists = Test-Path -LiteralPath $LogDir
-if (-not $dirExists) {
-    if ($PSCmdlet.ShouldProcess($LogDir, 'Create audit log directory')) {
-        New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
-        Write-Host "Created directory: $LogDir"
-        $dirExists = $true
-    } else {
-        Write-Host "[WhatIf] Would create directory: $LogDir"
-    }
-}
-
-# Resolve to a full path for clean reporting (only if it actually exists;
-# under -WhatIf on a brand-new path it may not, which is fine).
-$resolvedDir = $LogDir
-if ($dirExists) {
-    try { $resolvedDir = (Resolve-Path -LiteralPath $LogDir -ErrorAction Stop).Path } catch { }
+    Write-Warning 'This script must be run ELEVATED (Run as administrator).'
+    throw 'Not elevated - aborting before touching any ACLs.'
 }
 
 Write-Host ''
-Write-Host '=== Audit log ACL hardening ==='
-Write-Host ("  Directory : {0}" -f $resolvedDir)
+Write-Host '=== Audit log ACL hardening (append-only) ==='
+Write-Host ("  Directory : {0}" -f $LogDir)
 Write-Host ("  Shared    : {0}   (create + append; DENY read/delete)" -f $SharedPrincipal)
 Write-Host ("  Auditors  : {0}   (read-only)" -f $AuditorsPrincipal)
 Write-Host ("  Admin     : {0}   (full control)" -f $AdminPrincipal)
-Write-Host ''
 
-# Build all ACEs FIRST (this validates principal-name resolution early — a
-# bad/unresolvable identity throws here, before we mutate anything on disk).
-$aceSharedCreate = New-SharedDirCreateAce  -Principal $SharedPrincipal
-$aceSharedAppend = New-SharedFileAppendAce -Principal $SharedPrincipal
-$aceSharedDeny   = New-SharedDenyAce       -Principal $SharedPrincipal
-$aceAuditors     = New-AuditorsReadAce     -Principal $AuditorsPrincipal
-$aceAdmin        = New-AdminFullControlAce -Principal $AdminPrincipal
+$applied = Set-AuditLogAcl -LogDir $LogDir -SharedPrincipal $SharedPrincipal `
+                           -AuditorsPrincipal $AuditorsPrincipal -AdminPrincipal $AdminPrincipal
+if ($applied) { Write-Host 'ACL applied.' } else { Write-Host 'ACL not applied (WhatIf or failure — see warnings).' }
 
-if ($PSCmdlet.ShouldProcess($resolvedDir, 'Apply append-only audit ACL (deny read/delete to shared principal)')) {
-
-    # Get the current ACL, then rebuild a clean, PROTECTED DACL.
-    $acl = Get-Acl -LiteralPath $resolvedDir
-
-    # PROTECT the DACL from parent inheritance and DROP inherited ACEs so the
-    # log directory does not silently inherit a broad "Users:Read" from the
-    # share root (which would let the shared account read the log via an
-    # inherited ALLOW). $true = protect from inheritance, $false = remove
-    # existing inherited ACEs (do not copy them in).
-    $acl.SetAccessRuleProtection($true, $false)
-
-    # Remove any pre-existing explicit ACEs for OUR principals so re-runs are
-    # idempotent (RemoveAccessRuleAll strips all rules matching identity+type).
-    foreach ($r in @($aceSharedCreate, $aceSharedAppend, $aceSharedDeny, $aceAuditors, $aceAdmin)) {
-        [void]$acl.RemoveAccessRuleAll($r)
-    }
-
-    # Add our ACEs. The OS canonicalizes on persist so explicit DENY sorts
-    # before explicit ALLOW; we add deny first anyway for clarity.
-    $acl.AddAccessRule($aceSharedDeny)     # DENY read + delete (the hard wall)
-    $acl.AddAccessRule($aceSharedCreate)   # ALLOW create file + traverse (this folder)
-    $acl.AddAccessRule($aceSharedAppend)   # ALLOW append rows (files only)
-    $acl.AddAccessRule($aceAuditors)       # ALLOW auditors read
-    $acl.AddAccessRule($aceAdmin)          # ALLOW admin full control
-
-    Set-Acl -LiteralPath $resolvedDir -AclObject $acl
-    Write-Host 'ACL applied.'
-} else {
-    Write-Host '[WhatIf] Would protect the DACL (remove inheritance) and apply:'
-    Write-Host '  - DENY  Shared : ReadData + Delete + DeleteSubdirectoriesAndFiles  (CI,OI)'
-    Write-Host '  - ALLOW Shared : CreateFiles + AppendData + Synchronize + ReadAttributes + Traverse  (this folder only)'
-    Write-Host '  - ALLOW Shared : AppendData + Synchronize + ReadAttributes + WriteAttributes  (OI,IO — files only; NO WriteData)'
-    Write-Host '  - ALLOW Auditors : ReadAndExecute + Synchronize  (CI,OI)'
-    Write-Host '  - ALLOW Admin : FullControl  (CI,OI)'
-}
-
-# =====================================================================
-#  VERIFICATION — print the resulting ACL so the operator can eyeball it.
-# =====================================================================
-Write-Host ''
-Write-Host '=== Resulting ACL (verification) ==='
-if (-not (Test-Path -LiteralPath $resolvedDir)) {
-    Write-Host '[WhatIf] Directory does not exist yet (no changes were made) — nothing to read back.'
-} else {
-    try {
-        $finalAcl = Get-Acl -LiteralPath $resolvedDir
-        Write-Host ("Owner : {0}" -f $finalAcl.Owner)
-        Write-Host ("Protected from inheritance : {0}" -f $finalAcl.AreAccessRulesProtected)
-        Write-Host ''
-        $finalAcl.Access |
-            Select-Object IdentityReference,
-                          AccessControlType,
-                          FileSystemRights,
-                          IsInherited,
-                          InheritanceFlags,
-                          PropagationFlags |
-            Format-Table -AutoSize | Out-Host
-
-        Write-Host ''
-        Write-Host 'icacls view (raw flags) for cross-checking:'
-        # icacls is a built-in; reading the ACL via it is offline-safe and shows
-        # the (CI)/(OI)/(IO)/(NP) flags and the letter rights directly.
-        & icacls "$resolvedDir" | Out-Host
-    }
-    catch {
-        Write-Warning ("Could not read back the ACL for verification: {0}" -f $_.Exception.Message)
-    }
+# Verification: print the resulting ACL.
+if (Test-Path -LiteralPath $LogDir) {
+    Write-Host ''
+    Write-Host '=== Resulting ACL (verification) ==='
+    & icacls "$LogDir" | Out-Host
 }
 
 # =====================================================================
