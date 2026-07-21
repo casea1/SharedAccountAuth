@@ -126,10 +126,18 @@ if ($MyInvocation.InvocationName -ne '.') {
     $DeployDir  = $PSScriptRoot
     $SourceRoot = Split-Path -Parent $DeployDir
 
+    # Normalize the target path ONCE, up front. GetFullPath strips a stray
+    # trailing separator, which keeps the elevated-relaunch arg string clean:
+    # an -InstallDir ending in '\' would otherwise escape the closing quote and
+    # could swallow a following -Configure. A genuinely invalid path fails fast
+    # here - before any elevation, guard, or mutation.
+    try { $InstallFull = [System.IO.Path]::GetFullPath($InstallDir) }
+    catch { Write-Warning ("Invalid -InstallDir '{0}': {1}" -f $InstallDir, $_.Exception.Message); return }
+
     # 1. Self-elevate (delete/copy under Program Files + task register need admin).
     #    Relaunch with -NoExit so the elevated window stays up to read the report.
     if (-not (Test-IsElevated)) {
-        $inner = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -InstallDir `"$InstallDir`""
+        $inner = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -InstallDir `"$InstallFull`""
         if ($Configure)        { $inner += ' -Configure' }
         if ($WhatIfPreference) { $inner += ' -WhatIf' }
         try {
@@ -146,7 +154,7 @@ if ($MyInvocation.InvocationName -ne '.') {
 
     # ---- Resolve + validate SOURCE and TARGET before touching anything. ----
     $SrcFull  = [System.IO.Path]::GetFullPath($SourceRoot)
-    $DestFull = [System.IO.Path]::GetFullPath($InstallDir)
+    $DestFull = $InstallFull   # already normalized above
     Write-Host ("  Source : {0}" -f $SrcFull)
     Write-Host ("  Target : {0}" -f $DestFull)
     Write-Host ''
@@ -181,8 +189,12 @@ if ($MyInvocation.InvocationName -ne '.') {
     $destSetup    = Join-Path $DestFull 'deploy\Shared-Auth-Setup.ps1'
 
     # ---- Step 1: back up the site config (in-memory + a timestamped file). ----
-    # Read the bytes NOW so the config survives the delete even if the file
-    # backup fails. The stamp is UTC; no Get-Date format that could localize badly.
+    # Two independent safeguards: the in-memory $configBytes restores the config
+    # after the copy in the normal single-failure case (file backup fails but
+    # copy succeeds); the on-disk config-backups\ file is the recovery path for
+    # the rare double failure (file backup fails AND the copy throws, so we exit
+    # before restore) - so that backup is kept, not treated as throwaway. The
+    # stamp is UTC; no Get-Date format that could localize badly.
     $configBytes = [System.IO.File]::ReadAllBytes($destConfig)
     $backupDir   = 'C:\ProgramData\SharedAccountAuth\config-backups'
     $stamp       = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss') + 'Z'
