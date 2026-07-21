@@ -273,6 +273,7 @@ function Invoke-AuditGuiMain {
         try {
             $settings = Get-AuditGuiSettings $win
             if ([string]::IsNullOrWhiteSpace($settings.SharedAccount)) { $status.Text = 'Shared account is required.'; return }
+            $permWarn = ''
             # Auditors is read here (NOT persisted in config); it drives the log-folder ACL only.
             $auditors = $win.FindName('AuditorsBox').Text.Trim()
             if ([string]::IsNullOrWhiteSpace($auditors)) { $auditors = 'Audit' }
@@ -287,7 +288,10 @@ function Invoke-AuditGuiMain {
             try {
                 Set-AuditLocalStateAcl -Config (Get-AuditConfig -ConfigPath $realConfig) -SharedAccountOverride $settings.SharedAccount
                 $status.Text = 'Local-state permissions set.'
-            } catch { $status.Text = "Local-state ACL error: $($_.Exception.Message)" }
+            } catch {
+                $status.Text = "Local-state ACL error: $($_.Exception.Message)"
+                $permWarn += 'Local-state ACL FAILED. '
+            }
 
             # Log folder ACL: only when the log path is LOCAL (a workstation can't
             # set a remote server's NTFS ACLs - for a UNC share use Setup-SharePermissions on the server).
@@ -303,17 +307,26 @@ function Invoke-AuditGuiMain {
                     $audGrantee = if ($auditors -like '*\*' -and $auditors -notlike '.\*') { $auditors } else { "$env:COMPUTERNAME\$audLeaf" }
                     $ok = Set-AuditLogAcl -LogDir $logDir -SharedPrincipal $sharedGrantee -AuditorsPrincipal $audGrantee -Confirm:$false
                     if ($ok) { $status.Text = "Log-folder append-only ACL applied: $logDir" }
-                    else { $status.Text = "Log-folder ACL not applied (see warnings) - $logDir" }
+                    else {
+                        $status.Text = "Log-folder ACL not applied (see warnings) - $logDir"
+                        $permWarn += 'LOG ACL NOT APPLIED - central log is NOT append-only. '
+                    }
                 }
-            } catch { $status.Text = "Log ACL error: $($_.Exception.Message)" }
+            } catch {
+                $status.Text = "Log ACL error: $($_.Exception.Message)"
+                $permWarn += "LOG ACL ERROR: $($_.Exception.Message). "
+            }
 
             & $RegisterPath -ConfigPath $realConfig
 
             $cfg = Get-AuditConfig -ConfigPath $realConfig
             [void](Set-AuditRosterGrid $win $cfg)
             $t = & $runPreflight $cfg
-            $status.Text = "Installed. Config written (backup: $bak). Preflight: $($t.Fail) FAIL, $($t.Warn) WARN."
+            $summary = "Installed. Config written (backup: $bak). Preflight: $($t.Fail) FAIL, $($t.Warn) WARN."
+            if ($permWarn) { $summary = "WARNING - $permWarn`nInstall completed but permissions incomplete. $summary" }
+            $status.Text = $summary
             Write-AuditDiag -Config $cfg -Level Info -Message ("GUI: installed; preflight {0} FAIL {1} WARN" -f $t.Fail, $t.Warn)
+            if ($permWarn) { Write-AuditDiag -Config $cfg -Level Warn -Message ("GUI: permissions incomplete - {0}" -f $permWarn) }
         } catch { $status.Text = "Install error: $($_.Exception.Message)" }
     })
 

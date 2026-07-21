@@ -1,7 +1,7 @@
 # Shared-Account Sign-On Audit Logger — Design Spec
 
 **Date:** 2026-06-17
-**Status:** Approved (rev 4 — 2026-06-18: see §2 rev note for Tasks 1–7 hardening changes. rev 3 — 2026-06-18: dropped script signing — scripts run unsigned via `-ExecutionPolicy Bypass`, AppLocker is the integrity control; replaced `Sign-Scripts.ps1` with `deploy/Install-Audit.ps1`, a self-elevating one-command installer + preflight validator. rev 2 — adds local-credential authentication + shared-account scoping)
+**Status:** Approved (rev 5 — 2026-07-21: per-PC install unified into `deploy/Shared-Auth-Setup.ps1`, a self-elevating WPF GUI that writes config, sets folder ACLs, registers the tasks, and runs preflight; the CLI `deploy/Install-Audit.ps1` referenced below is retired — see [2026-07-21-unified-setup-tool-design.md](2026-07-21-unified-setup-tool-design.md). rev 4 — 2026-06-18: see §2 rev note for Tasks 1–7 hardening changes. rev 3 — 2026-06-18: dropped script signing — scripts run unsigned via `-ExecutionPolicy Bypass`, AppLocker is the integrity control; replaced `Sign-Scripts.ps1` with `deploy/Install-Audit.ps1`, a self-elevating one-command installer + preflight validator. rev 2 — adds local-credential authentication + shared-account scoping)
 **Target:** Windows 11 Enterprise, air-gapped / offline. Windows PowerShell **5.1** + **.NET Framework 4.x** (WPF/WinForms). **No internet** at build or runtime. **No external modules**. Built-in components only.
 
 ---
@@ -72,7 +72,7 @@ SharedAccountAuth/
 ├─ config/
 │  └─ AuditConfig.psd1           # single source of truth for paths/tunables + SharedAccount
 ├─ deploy/
-│  ├─ Install-Audit.ps1          # one-command per-PC install: self-elevate, register tasks, preflight-validate
+│  ├─ Shared-Auth-Setup.ps1      # self-elevating WPF GUI: writes config, sets folder ACLs, registers tasks, preflight (retired CLI Install-Audit.ps1)
 │  ├─ Register-AuditTasks.ps1    # registers Logon + SessionUnlock tasks SCOPED to the shared account
 │  ├─ Unregister-AuditTasks.ps1  # removes both tasks
 │  └─ Setup-SharePermissions.ps1 # admin-once: append-only ACLs on the log dir
@@ -250,10 +250,13 @@ St. James,Evelyn,ejames
 ```
 - `Username` = the person's **local** account name (validated against the local SAM). Header row required; extra columns ignored; blank rows skipped; apostrophes/commas/spaces in names handled (CSV-quoted). README documents format, location, who edits it, and that every roster `Username` must exist as a local account on each shared PC.
 
-## 14. Execution policy & install — `deploy/Install-Audit.ps1` (rev 3)
+## 14. Execution policy & install — `deploy/Shared-Auth-Setup.ps1` (rev 5)
+
+> **Rev 5 — 2026-07-21:** The CLI `deploy/Install-Audit.ps1` described in this section (and its `-ValidateOnly`/`-SkipValidation` modes) is **retired**. The per-PC installer is now `deploy/Shared-Auth-Setup.ps1`, a self-elevating WPF GUI that writes config, sets folder ACLs, registers the tasks, and runs preflight — see [2026-07-21-unified-setup-tool-design.md](2026-07-21-unified-setup-tool-design.md) for the current design. The execution-policy rationale and preflight checks below still apply.
+
 Scripts are **not signed**. `src/Launch-SharedAccountAuth.vbs` runs the prompt with `-ExecutionPolicy Bypass` (also avoids the "Mark of the Web" block on a copied `.ps1`); AppLocker path rules over the install directory are the integrity control. The former `Sign-Scripts.ps1` helper and the AllSigned posture are removed. (A site that mandates signing flips the launcher token to AllSigned/RemoteSigned and signs the `.ps1`/`.psd1`; a machine-level GPO execution policy overrides the process-scope token regardless.)
 
-`deploy/Install-Audit.ps1` is the one-command per-PC installer: it **self-elevates** (UAC, relaunch in a `-NoExit` window), registers the tasks by invoking `Register-AuditTasks.ps1` (no duplicated XML), then runs a **preflight validator**. Modes: default (register + preflight), `-ValidateOnly` (preflight only, changes nothing), `-SkipValidation` (register only). The preflight is best-effort/never-throws, **never writes to the append-only central log**, and reports OK/WARN/FAIL for: config valid + `SharedAccount` set; install files present; `SharedAccount` and every roster `Username` cross-checked against local accounts (enumerated offline via the ADSI WinNT provider); central `LogPath` UNC reachability; roster load + source; local state root; and both tasks registered + enabled.
+`deploy/Shared-Auth-Setup.ps1` is the per-PC installer: a self-elevating WPF GUI (UAC relaunch) that writes `AuditConfig.psd1`, sets the local-state ACL and (when the log path is local) the log-folder append-only ACL, registers the tasks by invoking `Register-AuditTasks.ps1` (no duplicated XML), then runs a **preflight validator**. A **Validate** button runs preflight only (no changes on disk); **Install** writes config, sets permissions, registers the tasks, and re-runs preflight. The preflight is best-effort/never-throws, **never writes to the append-only central log**, and reports OK/WARN/FAIL for: config valid + `SharedAccount` set; install files present; `SharedAccount` and every roster `Username` cross-checked against local accounts (enumerated offline via the ADSI WinNT provider); central `LogPath` UNC reachability; roster load + source; local state root; and both tasks registered + enabled.
 
 ## 15. Diagnostics, Security & Error Handling
 

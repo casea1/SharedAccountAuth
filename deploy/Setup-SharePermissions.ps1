@@ -1,10 +1,10 @@
 <#
 =======================================================================
- Setup-SharePermissions.ps1 — admin-once NTFS ACL hardening for the
+ Setup-SharePermissions.ps1 - admin-once NTFS ACL hardening for the
  central audit log directory.
  Windows PowerShell 5.1 / .NET Framework 4.x ONLY. No external modules.
  Fully offline. Run ONCE, ELEVATED, on the file server that hosts the
- share (operate on the local NTFS path, e.g. D:\audit — not the UNC).
+ share (operate on the local NTFS path, e.g. D:\audit - not the UNC).
 
  ---------------------------------------------------------------------
  WHAT THIS SCRIPT GUARANTEES (spec section 12)
@@ -27,13 +27,13 @@
  forces every design choice in src\AuditCommon.ps1:
 
    * Header is written ONLY inside the FileMode.CreateNew "create-race"
-     winner — we cannot open the file and look for a header line,
+     winner - we cannot open the file and look for a header line,
      because opening it for read is denied. Exactly one machine wins the
      create race and writes the header; everyone else opens in Append
      mode and writes a data line only. The header is therefore never
      duplicated and never read.
    * Appends use FILE_APPEND_DATA semantics (FileMode.Append +
-     FileAccess.Write) — never WriteData — so a writer can only add to
+     FileAccess.Write) - never WriteData - so a writer can only add to
      the end and can never seek back to overwrite a prior row. This is
      mirrored in the ACL: we grant AppendData but explicitly do NOT
      grant WriteData on files.
@@ -48,7 +48,7 @@
  security control; the append-only, never-read-the-log algorithm is the
  direct consequence, not an arbitrary stylistic choice. If this ACL were
  relaxed to allow reads, a malicious shared-session user could exfiltrate
- every other user's access history, or tamper with prior rows — exactly
+ every other user's access history, or tamper with prior rows - exactly
  what this design exists to prevent.
 
  ---------------------------------------------------------------------
@@ -76,18 +76,18 @@
  account create a new file (access_log.csv); but the SAME 0x2 bit is
  WriteData on a FILE, which would permit overwriting existing rows.
  So we grant CreateFiles on the DIRECTORY (this-folder-only, no file
- inheritance) and we DO NOT let it inherit to files — files get only
+ inheritance) and we DO NOT let it inherit to files - files get only
  AppendData. This is the crux of "create yes, overwrite no".
 
  ---------------------------------------------------------------------
- Config block (mirrors config\AuditConfig.psd1 — single source of
+ Config block (mirrors config\AuditConfig.psd1 - single source of
  truth). This deploy script targets the local NTFS folder that BACKS
  the UNC LogPath; only LogPath is conceptually related:
  ---------------------------------------------------------------------
    LogPath  \\server\share\audit\access_log.csv   (the file that lives
             in -LogDir; this script secures its parent directory)
  The other AuditConfig keys (RosterPath, LocalRoot, tunables, etc.) are
- not used here — ACLs are a server-side, one-time concern. Pass the
+ not used here - ACLs are a server-side, one-time concern. Pass the
  LOCAL directory that backs that UNC path via -LogDir.
 
  ---------------------------------------------------------------------
@@ -108,7 +108,7 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
     # Local NTFS directory that holds (or will hold) access_log.csv.
-    # Use the LOCAL path on the file server (e.g. D:\audit), NOT the UNC —
+    # Use the LOCAL path on the file server (e.g. D:\audit), NOT the UNC -
     # NTFS ACLs are set on the local volume; the SMB share ACL is separate.
     [Parameter(Mandatory = $true)]
     [string] $LogDir,
@@ -133,7 +133,7 @@ param(
     # When supplied, grant the SharedPrincipal MODIFY on it so the shared
     # account can update its own diag log + roster cache (not just create spool
     # files). Leave blank to skip. NOTE: this is a per-WORKSTATION grant (run it
-    # on the workstation) — separate from the central append-only log ACL above.
+    # on the workstation) - separate from the central append-only log ACL above.
     # deploy\Shared-Auth-Setup.ps1 does this automatically per-PC; this is the manual
     # equivalent for when you only run Setup-SharePermissions.
     [Parameter(Mandatory = $false)]
@@ -160,7 +160,7 @@ $ErrorActionPreference = 'Stop'
 #    AD = AppendData / AddSubdir     (0x4: append to a file; add subdir to a dir)
 #    RD = ReadData / ListDirectory   (0x1: read file bytes; list a dir)
 #    S  = Synchronize                (0x100000: required for normal synchronous I/O)
-#    RA = ReadAttributes             (0x80: read size/timestamps — NOT content)
+#    RA = ReadAttributes             (0x80: read size/timestamps - NOT content)
 #    WA = WriteAttributes            (0x100: update attrs the OS touches on write)
 #    X  = ExecuteFile / Traverse     (0x20: pass through a dir to a named child)
 #    D  = Delete                     (0x10000: delete THIS object)
@@ -168,10 +168,10 @@ $ErrorActionPreference = 'Stop'
 #    RX = ReadAndExecute (RD + X + RA + ReadEA + ReadControl + S)
 #
 #  icacls inheritance/propagation flags:
-#    (CI) = ContainerInherit  — ACE inherits to SUBDIRECTORIES
-#    (OI) = ObjectInherit     — ACE inherits to FILES
-#    (IO) = InheritOnly       — ACE applies to children ONLY, not this object
-#    (NP) = NoPropagate       — inherit to immediate children only (do not cascade)
+#    (CI) = ContainerInherit  - ACE inherits to SUBDIRECTORIES
+#    (OI) = ObjectInherit     - ACE inherits to FILES
+#    (IO) = InheritOnly       - ACE applies to children ONLY, not this object
+#    (NP) = NoPropagate       - inherit to immediate children only (do not cascade)
 #  Absence of (CI)/(OI) on a grant => "this folder only" (no inheritance).
 #
 #  Equivalent commands (run elevated on the server; substitute path/principals):
@@ -185,7 +185,7 @@ $ErrorActionPreference = 'Stop'
 #
 #    :: 2) Shared: append rows on FILES ONLY (OI)(IO) = object-inherit, inherit-only,
 #    ::    so the directory itself is unaffected and only files get AppendData.
-#    ::    Note: NO WD here — files must never be overwritable; WA only touches attrs.
+#    ::    Note: NO WD here - files must never be overwritable; WA only touches attrs.
 #    icacls "D:\audit" /grant:r "DOMAIN\Shared:(OI)(IO)(AD,S,RA,WA)"
 #
 #    :: 3) Shared: DENY read of contents + delete. (OI) deny so files can't be read;
@@ -249,7 +249,7 @@ Write-Host ("  Admin     : {0}   (full control)" -f $AdminPrincipal)
 
 $applied = Set-AuditLogAcl -LogDir $LogDir -SharedPrincipal $SharedPrincipal `
                            -AuditorsPrincipal $AuditorsPrincipal -AdminPrincipal $AdminPrincipal
-if ($applied) { Write-Host 'ACL applied.' } else { Write-Host 'ACL not applied (WhatIf or failure — see warnings).' }
+if ($applied) { Write-Host 'ACL applied.' } else { Write-Host 'ACL not applied (WhatIf or failure - see warnings).' }
 
 # Verification: print the resulting ACL.
 if (Test-Path -LiteralPath $LogDir) {
@@ -259,7 +259,7 @@ if (Test-Path -LiteralPath $LogDir) {
 }
 
 # =====================================================================
-#  OPTIONAL: local state dir (workstation ProgramData) — grant the shared
+#  OPTIONAL: local state dir (workstation ProgramData) - grant the shared
 #  account MODIFY so the prompt can update its own cache/diag/spool/state.
 #  Unlike the append-only central log, the shared account needs full write
 #  here (it owns this state). Per-workstation; skipped unless -LocalStateDir.
