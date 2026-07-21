@@ -67,6 +67,12 @@ Expected: FAIL — `Set-AuditLogAcl`/`Set-AuditLocalStateAcl`/the ACE builders a
 
 **Cut** these five functions **verbatim** from `deploy/Setup-SharePermissions.ps1` and **paste** them into `deploy/AuditInstallCommon.ps1` (after the existing functions, before any trailing content): `New-SharedDirCreateAce`, `New-SharedFileAppendAce`, `New-SharedDenyAce`, `New-AuditorsReadAce`, `New-AdminFullControlAce`. Do not change their bodies. (They are pure `FileSystemAccessRule` builders.)
 
+**Then, so `Setup-SharePermissions.ps1` still resolves those (now-moved) builders**, add a dot-source of the shared lib near the top of `deploy/Setup-SharePermissions.ps1` (right after its `Set-StrictMode`/`$ErrorActionPreference` lines):
+```powershell
+. (Join-Path $PSScriptRoot 'AuditInstallCommon.ps1')
+```
+Its MAIN still calls `New-SharedDirCreateAce` etc., which now resolve from the lib — so the script keeps working after this task. (Task 2 then rewrites that MAIN to call `Set-AuditLogAcl`.) Leave the file's own `Test-IsElevated` and the `-LocalStateDir` block untouched.
+
 - [ ] **Step 4: Add `Set-AuditLocalStateAcl` to `AuditInstallCommon.ps1`**
 
 Copy this function from `deploy/Install-Audit.ps1` into `deploy/AuditInstallCommon.ps1` verbatim (it is deleted from `Install-Audit.ps1` in Task 3):
@@ -183,10 +189,17 @@ function Set-AuditLogAcl {
 }
 ```
 
-- [ ] **Step 6: Run tests + parse-check**
+- [ ] **Step 6: Run tests + parse-check (both files)**
 
 Run: `powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-AuditInstall.ps1` → PASS.
-Parse-check: `powershell -NoProfile -Command "$e=$null;[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path deploy\AuditInstallCommon.ps1),[ref]$null,[ref]$e);if($e){$e}else{'OK'}"` → `OK`.
+Parse-check **both** `deploy\AuditInstallCommon.ps1` and `deploy\Setup-SharePermissions.ps1`:
+```powershell
+foreach ($f in 'deploy\AuditInstallCommon.ps1','deploy\Setup-SharePermissions.ps1') {
+  $e=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f),[ref]$null,[ref]$e) | Out-Null
+  if ($e) { "FAIL $f"; $e } else { "OK   $f" }
+}
+```
+Expected: both `OK`.
 
 - [ ] **Step 7: Commit**
 
