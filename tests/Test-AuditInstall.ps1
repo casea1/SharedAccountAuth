@@ -115,18 +115,26 @@ Assert-True ($unlockXml -match '<Priority>4</Priority>') 'Unlock task priority i
 
 Write-Host ''
 Write-Host 'Task 1: ACL engine in AuditInstallCommon'
-foreach ($fn in 'Set-AuditLogAcl','Set-AuditLocalStateAcl','New-SharedDirCreateAce','New-AuditorsReadAce') {
+foreach ($fn in 'Set-AuditLogAcl','Set-AuditLocalStateAcl','New-SharedDirCreateAce','New-SharedFileAppendAce','New-SharedDenyAce','New-AuditorsReadAce','New-AdminFullControlAce') {
     Assert-True ([bool](Get-Command $fn -ErrorAction SilentlyContinue)) "function $fn is defined"
 }
 # ACE builders are pure — they must produce FileSystemAccessRule objects without touching disk.
 $__ace = New-SharedDirCreateAce -Principal $env:USERNAME
 Assert-True ($__ace -is [System.Security.AccessControl.FileSystemAccessRule]) 'New-SharedDirCreateAce returns a FileSystemAccessRule'
-# Set-AuditLogAcl -WhatIf must validate + gate without applying or throwing.
+$__deny = New-SharedDenyAce -Principal $env:USERNAME
+Assert-True ($__deny.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny) 'New-SharedDenyAce is a Deny rule'
+Assert-True (($__deny.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::ReadData) -ne 0) 'deny ACE includes ReadData (no read of the log)'
+$__app = New-SharedFileAppendAce -Principal $env:USERNAME
+Assert-True ($__app.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) 'append ACE is Allow'
+Assert-True (($__app.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::AppendData) -ne 0) 'append ACE includes AppendData'
+# Set-AuditLogAcl -WhatIf must validate + gate without applying or throwing, and must
+# return $false (per its documented contract: $true if applied, $false if skipped/failed).
 $__d = Join-Path $env:TEMP ('logacl_' + [System.IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Force $__d | Out-Null
 $__threw = $false
-try { $__r = Set-AuditLogAcl -LogDir $__d -SharedPrincipal $env:USERNAME -AuditorsPrincipal 'Administrators' -WhatIf } catch { $__threw = $true }
+try { $__wr = Set-AuditLogAcl -LogDir $__d -SharedPrincipal $env:USERNAME -AuditorsPrincipal 'Administrators' -WhatIf } catch { $__threw = $true }
 Assert-True (-not $__threw) 'Set-AuditLogAcl -WhatIf does not throw'
+Assert-True ($__wr -eq $false) 'Set-AuditLogAcl -WhatIf returns $false (does not apply)'
 try { Remove-Item -LiteralPath $__d -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 
 if ($script:Failures -gt 0) { Write-Host ("$($script:Failures) failure(s)") -ForegroundColor Red; exit 1 }
