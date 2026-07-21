@@ -126,7 +126,18 @@ param(
     # Admin / service principal that gets FullControl. Defaults to the
     # local Administrators group. Pass a service account if preferred.
     [Parameter(Mandatory = $false)]
-    [string] $AdminPrincipal = 'BUILTIN\Administrators'
+    [string] $AdminPrincipal = 'BUILTIN\Administrators',
+
+    # OPTIONAL, WORKSTATION-SIDE: the local state root the prompt writes to
+    # (cache/diag/spool/state), normally C:\ProgramData\SharedAccountAuth.
+    # When supplied, grant the SharedPrincipal MODIFY on it so the shared
+    # account can update its own diag log + roster cache (not just create spool
+    # files). Leave blank to skip. NOTE: this is a per-WORKSTATION grant (run it
+    # on the workstation) — separate from the central append-only log ACL above.
+    # deploy\Install-Audit.ps1 does this automatically per-PC; this is the manual
+    # equivalent for when you only run Setup-SharePermissions.
+    [Parameter(Mandatory = $false)]
+    [string] $LocalStateDir = ''
 )
 
 # Tighten errors so a failed ACL step never "half applies" silently.
@@ -546,6 +557,32 @@ if (-not (Test-Path -LiteralPath $resolvedDir)) {
     }
     catch {
         Write-Warning ("Could not read back the ACL for verification: {0}" -f $_.Exception.Message)
+    }
+}
+
+# =====================================================================
+#  OPTIONAL: local state dir (workstation ProgramData) — grant the shared
+#  account MODIFY so the prompt can update its own cache/diag/spool/state.
+#  Unlike the append-only central log, the shared account needs full write
+#  here (it owns this state). Per-workstation; skipped unless -LocalStateDir.
+# =====================================================================
+if (-not [string]::IsNullOrWhiteSpace($LocalStateDir)) {
+    Write-Host ''
+    Write-Host '=== Local state ACL (shared account write access) ==='
+    if ($PSCmdlet.ShouldProcess($LocalStateDir, ("Grant '{0}' Modify on the local state dir" -f $SharedPrincipal))) {
+        if (-not (Test-Path -LiteralPath $LocalStateDir)) {
+            New-Item -ItemType Directory -Path $LocalStateDir -Force | Out-Null
+            Write-Host "Created local state dir: $LocalStateDir"
+        }
+        # icacls: Modify, (OI)(CI) inherit to files+subfolders, /T existing children, /C continue.
+        $localOut = & icacls "$LocalStateDir" /grant ("{0}:(OI)(CI)M" -f $SharedPrincipal) /T /C 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning ("icacls returned {0} granting local-state access: {1}" -f $LASTEXITCODE, ($localOut -join '; '))
+        } else {
+            Write-Host ("Granted '{0}' Modify on local state dir: {1}" -f $SharedPrincipal, $LocalStateDir)
+        }
+    } else {
+        Write-Host ("[WhatIf] Would grant '{0}' Modify on local state dir: {1}" -f $SharedPrincipal, $LocalStateDir)
     }
 }
 

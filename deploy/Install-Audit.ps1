@@ -147,6 +147,63 @@ function Write-AuditPreflightReport {
 }
 
 
+function Set-AuditLocalStateAcl {
+<#
+.SYNOPSIS
+    Grant the shared account Modify on the local state root (LocalRoot) so the
+    prompt (which runs as that account) can write ALL of its state files.
+.DESCRIPTION
+    The prompt writes to C:\ProgramData\SharedAccountAuth\ (cache, diag, spool,
+    state). Because this installer creates those dirs while ELEVATED, a standard
+    shared user can otherwise only create NEW files there (spool) but cannot
+    update EXISTING ones (the diag log and the roster cache) — which silently
+    breaks diagnostics and the roster cache fallback. This grants the shared
+    account Modify (inherited to subfolders + files, applied to existing
+    children) so its whole state tree is writable. NEVER throws (a failure here
+    must not abort the install); logs a warning instead.
+.PARAMETER Config
+    Resolved config hashtable (LocalRoot, SharedAccount).
+.PARAMETER SharedAccountOverride
+    Optional explicit shared account (else uses config SharedAccount).
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][hashtable] $Config,
+        [string] $SharedAccountOverride
+    )
+    try {
+        $localRoot = [string]$Config.LocalRoot
+        if ([string]::IsNullOrWhiteSpace($localRoot)) { return }
+        if (-not (Test-Path -LiteralPath $localRoot)) {
+            New-Item -ItemType Directory -Path $localRoot -Force | Out-Null
+        }
+
+        # Resolve the shared account to a grantable identity (MACHINE\name for a
+        # local account; keep MACHINE\ or DOMAIN\ prefixes as supplied).
+        $acct = if (-not [string]::IsNullOrWhiteSpace($SharedAccountOverride)) { $SharedAccountOverride } else { [string]$Config.SharedAccount }
+        $leaf = Get-AuditLeafName -Name $acct
+        if ([string]::IsNullOrWhiteSpace($leaf)) { return }
+        $bs = $acct.IndexOf('\')
+        if ($bs -ge 0 -and $acct.Substring(0, $bs) -ne '.' -and -not [string]::IsNullOrWhiteSpace($acct.Substring(0, $bs))) {
+            $grantee = $acct
+        } else {
+            $grantee = '{0}\{1}' -f $env:COMPUTERNAME, $leaf
+        }
+
+        # icacls: grant Modify, (OI)(CI) inherit to files+subfolders, /T to apply
+        # to existing children, /C to continue past any per-file error.
+        $icaclsOut = & icacls "$localRoot" /grant ("{0}:(OI)(CI)M" -f $grantee) /T /C 2>&1
+        if ($LASTEXITCODE -ne 0) { throw ("icacls returned {0}: {1}" -f $LASTEXITCODE, ($icaclsOut -join '; ')) }
+
+        Write-Host ("Granted '{0}' write access to local state: {1}" -f $grantee, $localRoot) -ForegroundColor Cyan
+        Write-AuditDiag -Config $Config -Level Info -Message ("Install-Audit: granted {0} Modify on {1}" -f $grantee, $localRoot)
+    } catch {
+        Write-Warning ("Could not set local-state ACL (non-fatal): {0}" -f $_.Exception.Message)
+        try { Write-AuditDiag -Config $Config -Level Warn -Message ("Install-Audit: could not set local-state ACL: {0}" -f $_.Exception.Message) } catch { }
+    }
+}
+
+
 # =====================================================================
 #  MAIN
 # =====================================================================
@@ -203,6 +260,11 @@ if (-not $ValidateOnly) {
     if (-not [string]::IsNullOrWhiteSpace($SharedAccount)) { $regParams['SharedAccount'] = $SharedAccount }
     & $RegisterPath @regParams
     Write-AuditDiag -Config $cfg -Level Info -Message 'Install-Audit: tasks registered via Register-AuditTasks.'
+
+    # Grant the shared account write access to its own local state tree so the
+    # prompt (running as that account) can update the diag log + roster cache,
+    # not just create spool files. Without this, diagnostics go silently blind.
+    Set-AuditLocalStateAcl -Config $cfg -SharedAccountOverride $SharedAccount
 } else {
     Write-Host 'Validate-only mode: not registering tasks.' -ForegroundColor Yellow
 }
