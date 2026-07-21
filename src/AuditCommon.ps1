@@ -778,8 +778,8 @@ function Write-AuditRow {
     param(
         [Parameter(Mandatory = $true)] [hashtable] $Config,
         [Parameter(Mandatory = $true)] [string]    $Username,
-        [Parameter(Mandatory = $true)] [string]    $LastName,
-        [Parameter(Mandatory = $true)] [string]    $FirstName,
+        [Parameter(Mandatory = $true)][AllowEmptyString()] [string] $LastName,
+        [Parameter(Mandatory = $true)][AllowEmptyString()] [string] $FirstName,
         [Parameter(Mandatory = $true)]
         [ValidateSet('Logon', 'Unlock')] [string]  $EventType,
         [Parameter(Mandatory = $true)]

@@ -84,6 +84,27 @@ foreach ($n in 'TopBanner','BottomBanner','LogoImage','NameCombo','PwBox','Confi
     Assert-True ($null -ne $w.FindName($n)) "control '$n' present"
 }
 
+Write-Host 'Regression: Write-AuditRow accepts empty LastName/FirstName (username-only roster)'
+$__rr = "$env:TEMP\audrowtest_$([System.IO.Path]::GetRandomFileName())"
+New-Item -ItemType Directory -Force "$__rr\logs" | Out-Null
+$__cfgp = "$__rr\cfg.psd1"
+@"
+@{
+    LogPath='$__rr\logs\access_log.csv'; RosterPath='$__rr\roster.csv'; LocalRoot='$__rr\state'
+    RosterCachePath=''; SpoolDir=''; DiagLogPath=''; StateDir=''
+    SharedAccount='.\test'; AuthDomain='.'; RetryDelayMs=0; DebounceSeconds=0; WriteRetryCount=3; WriteRetryBaseMs=10
+    AppName='x'; WindowTitle='x'; WindowSubtitle='x'
+    ClassificationLevel=''; ClassificationText=''; ClassificationForeground=''; ClassificationBackground=''; LogoPath=''
+}
+"@ | Set-Content -LiteralPath $__cfgp -Encoding UTF8
+$__cfg = Get-AuditConfig -ConfigPath $__cfgp
+$__threw = $false
+try { $__res = Write-AuditRow -Config $__cfg -Username 'asmith' -LastName '' -FirstName '' -EventType 'Unlock' -AuthResult 'Success' }
+catch { $__threw = $true }
+Assert-True (-not $__threw) 'Write-AuditRow does not throw on empty LastName/FirstName'
+Assert-True ($__threw -or $__res.Written) 'row was written (not spooled) with empty names'
+try { Remove-Item -LiteralPath $__rr -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+
 Write-Host ''
 if ($script:Failures -gt 0) { Write-Host ("$($script:Failures) failure(s)") -ForegroundColor Red; exit 1 }
 Write-Host 'All tests passed.' -ForegroundColor Green
