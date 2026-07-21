@@ -1,10 +1,10 @@
 <#
 =======================================================================
  AuditInstallCommon.ps1 - shared install-time library for the Shared-
- Account Sign-On Audit Logger. Dot-sourced by deploy\Install-Audit.ps1
- (CLI) and deploy\Install-Audit-GUI.ps1 (WPF). PS 5.1 / built-ins only;
- fully offline. Provides the preflight engine, local-account enumeration,
- a psd1 writer, and a value->resolved-config helper.
+ Account Sign-On Audit Logger. Dot-sourced by deploy\Shared-Auth-Setup.ps1
+ (WPF). PS 5.1 / built-ins only; fully offline. Provides the preflight
+ engine, local-account enumeration, a psd1 writer, and a value->resolved-
+ config helper.
 =======================================================================
 #>
 Set-StrictMode -Version 2.0

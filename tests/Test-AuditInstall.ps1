@@ -78,8 +78,8 @@ Assert-True ($cfg.RosterCachePath -like '*\cache\roster.csv') 'derived cache pat
 
 Write-Host ''
 Write-Host 'Task 4: GUI XAML + scaffold'
-$guiPath = Join-Path $RepoRoot 'deploy\Install-Audit-GUI.ps1'
-Assert-True (Test-Path -LiteralPath $guiPath) 'Install-Audit-GUI.ps1 exists'
+$guiPath = Join-Path $RepoRoot 'deploy\Shared-Auth-Setup.ps1'
+Assert-True (Test-Path -LiteralPath $guiPath) 'Shared-Auth-Setup.ps1 exists'
 # Dot-source must NOT trigger the interactive flow (guarded by InvocationName).
 . $guiPath
 Assert-True ([bool](Get-Command Get-AuditGuiXaml -ErrorAction SilentlyContinue)) 'Get-AuditGuiXaml defined'

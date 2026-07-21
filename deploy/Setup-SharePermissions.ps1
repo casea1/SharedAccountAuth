@@ -134,7 +134,7 @@ param(
     # account can update its own diag log + roster cache (not just create spool
     # files). Leave blank to skip. NOTE: this is a per-WORKSTATION grant (run it
     # on the workstation) — separate from the central append-only log ACL above.
-    # deploy\Install-Audit.ps1 does this automatically per-PC; this is the manual
+    # deploy\Shared-Auth-Setup.ps1 does this automatically per-PC; this is the manual
     # equivalent for when you only run Setup-SharePermissions.
     [Parameter(Mandatory = $false)]
     [string] $LocalStateDir = ''

@@ -1,6 +1,6 @@
 <#
 =======================================================================
- Install-Audit-GUI.ps1 - single-pane WPF front-end for the per-PC
+ Shared-Auth-Setup.ps1 - single-pane WPF front-end for the per-PC
  install of the Shared-Account Sign-On Audit Logger.
  PS 5.1 / .NET 4.x WPF / built-ins only; fully offline. Self-elevates.
  Collects LogPath / RosterPath / SharedAccount, previews the roster
