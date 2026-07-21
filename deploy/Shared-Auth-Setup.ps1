@@ -291,19 +291,21 @@ function Invoke-AuditGuiMain {
 
             # Log folder ACL: only when the log path is LOCAL (a workstation can't
             # set a remote server's NTFS ACLs - for a UNC share use Setup-SharePermissions on the server).
-            $logDir = Split-Path -Parent $settings.LogPath
-            if ($settings.LogPath -like '\\*') {
-                $status.Text = "Log is a UNC share - set its ACL on the server with Setup-SharePermissions.ps1."
-            } elseif (-not [string]::IsNullOrWhiteSpace($logDir)) {
-                # Resolve grantable principals (MACHINE\name for bare/.\; keep MACHINE\/DOMAIN\).
-                $sharedLeaf = Get-AuditLeafName -Name $settings.SharedAccount
-                $sharedGrantee = if ($settings.SharedAccount -like '*\*' -and $settings.SharedAccount -notlike '.\*') { $settings.SharedAccount } else { "$env:COMPUTERNAME\$sharedLeaf" }
-                $audLeaf = Get-AuditLeafName -Name $auditors
-                $audGrantee = if ($auditors -like '*\*' -and $auditors -notlike '.\*') { $auditors } else { "$env:COMPUTERNAME\$audLeaf" }
-                $ok = Set-AuditLogAcl -LogDir $logDir -SharedPrincipal $sharedGrantee -AuditorsPrincipal $audGrantee
-                if ($ok) { $status.Text = "Log-folder append-only ACL applied: $logDir" }
-                else { $status.Text = "Log-folder ACL not applied (see warnings) - $logDir" }
-            }
+            try {
+                $logDir = Split-Path -Parent $settings.LogPath
+                if ($settings.LogPath -like '\\*') {
+                    $status.Text = "Log is a UNC share - set its ACL on the server with Setup-SharePermissions.ps1."
+                } elseif (-not [string]::IsNullOrWhiteSpace($logDir)) {
+                    # Resolve grantable principals (MACHINE\name for bare/.\; keep MACHINE\/DOMAIN\).
+                    $sharedLeaf = Get-AuditLeafName -Name $settings.SharedAccount
+                    $sharedGrantee = if ($settings.SharedAccount -like '*\*' -and $settings.SharedAccount -notlike '.\*') { $settings.SharedAccount } else { "$env:COMPUTERNAME\$sharedLeaf" }
+                    $audLeaf = Get-AuditLeafName -Name $auditors
+                    $audGrantee = if ($auditors -like '*\*' -and $auditors -notlike '.\*') { $auditors } else { "$env:COMPUTERNAME\$audLeaf" }
+                    $ok = Set-AuditLogAcl -LogDir $logDir -SharedPrincipal $sharedGrantee -AuditorsPrincipal $audGrantee -Confirm:$false
+                    if ($ok) { $status.Text = "Log-folder append-only ACL applied: $logDir" }
+                    else { $status.Text = "Log-folder ACL not applied (see warnings) - $logDir" }
+                }
+            } catch { $status.Text = "Log ACL error: $($_.Exception.Message)" }
 
             & $RegisterPath -ConfigPath $realConfig
 
