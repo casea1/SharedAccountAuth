@@ -117,6 +117,20 @@ append-only ACL there (a workstation can't set a remote server's NTFS ACLs).
 
 Then **test** as described in [section 7](#7-testing) before relying on it (the preflight that runs at the end of `Shared-Auth-Setup.ps1` is a fast first check; the sign-out/in + unlock test confirms the end-to-end flow).
 
+### Classification banner and logo
+
+The setup tool's **Classification** dropdown writes `ClassificationLevel` to `AuditConfig.psd1`, which sets the full-width banner color tier shown on the prompt. Built-in level->color defaults:
+
+| `ClassificationLevel` | Foreground | Background |
+|---|---|---|
+| `UNCLASSIFIED` | White | `#007A33` (green) |
+| `CUI` | White | `#512B85` (purple) |
+| `CONFIDENTIAL` | White | `#0033A0` (blue) |
+| `SECRET` | White | `#C8102E` (red) |
+| `TOP SECRET` | Black | `#FF8C00` (orange) |
+
+Selecting `(none)` hides the banner. To customize beyond the dropdown, edit the psd1 directly: `ClassificationText` overrides the displayed string (defaults to the level name); `ClassificationForeground` / `ClassificationBackground` override the individual colors. `LogoPath` (absolute or `$PSScriptRoot`-relative, e.g. `assets\GE-Aerospace-Emblem.png`) sets the logo shown in the banner; leave it blank to hide the logo.
+
 ---
 
 ## 3. Authentication model
