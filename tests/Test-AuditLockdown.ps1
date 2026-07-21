@@ -83,6 +83,9 @@ $w = [System.Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeRead
 foreach ($n in 'TopBanner','BottomBanner','LogoImage','NameCombo','PwBox','ConfirmButton','StatusText') {
     Assert-True ($null -ne $w.FindName($n)) "control '$n' present"
 }
+# The name field must be SELECTION-ONLY: a non-editable ComboBox admits no free
+# text, so the only settable value is a roster username picked from the list.
+Assert-True (-not $w.FindName('NameCombo').IsEditable) 'NameCombo is selection-only (IsEditable=$false)'
 
 Write-Host 'Regression: Write-AuditRow accepts empty LastName/FirstName (username-only roster)'
 $__rr = "$env:TEMP\audrowtest_$([System.IO.Path]::GetRandomFileName())"

@@ -157,8 +157,8 @@ function Get-AuditPromptXaml {
 
           <TextBlock Text="Your name" Foreground="#FFB7C0CC" FontSize="14" Margin="0,24,0,6"/>
           <Grid>
-            <ComboBox x:Name="NameCombo" IsEditable="True" IsTextSearchEnabled="True" StaysOpenOnEdit="True" FontSize="18" Height="40" BorderBrush="#FF3A4656" BorderThickness="1"/>
-            <TextBlock x:Name="NameWatermark" Text="— select your name —" Foreground="#FF6B7480" FontSize="15" Margin="10,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+            <ComboBox x:Name="NameCombo" IsEditable="False" IsTextSearchEnabled="True" FontSize="18" Height="40" BorderBrush="#FF3A4656" BorderThickness="1"/>
+            <TextBlock x:Name="NameWatermark" Text="Select your name..." Foreground="#FF6B7480" FontSize="15" Margin="10,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
           </Grid>
 
           <TextBlock Text="Your password" Foreground="#FFB7C0CC" FontSize="14" Margin="0,18,0,6"/>
@@ -393,17 +393,13 @@ try {
     $script:SelectedEntry     = $null    # the currently-valid roster pscustomobject (or $null)
     $script:RosterAvailable   = ($rosterSource -ne 'none' -and $entries.Count -gt 0)
     $script:LastAttemptFailed = $false   # true after a failed auth; clears the status on next keystroke
-    $script:NameFilterText    = ''       # current substring filter for the name dropdown
     $script:RetryThrottled    = $false   # true during the post-failure delay; blocks input re-enable
 
-    # Build a fast lookup: USERNAME string -> roster entry (Task 6: the
-    # dropdown shows USERNAMES, not "Last, First" displays). A name is
-    # "valid" only on an EXACT username match. We key the dictionary and
-    # build the item list from the SAME sorted pass so they stay in sync;
-    # entries are deduped on first occurrence (the roster is already deduped
-    # by Username upstream, but we guard anyway). The variable keeps its old
-    # name ($displayToEntry) so $updateState/$onNameTextChanged — which look
-    # up $nameCombo.Text against it — keep working unchanged, now on usernames.
+    # Build a fast lookup: USERNAME string -> roster entry. The dropdown shows
+    # USERNAMES; a selection is valid only when it maps to a roster entry. We
+    # key the dictionary and build the item list from the SAME sorted pass so
+    # they stay in sync; entries are deduped on first occurrence (the roster is
+    # already deduped by Username upstream, but we guard anyway).
     $displayToEntry = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::OrdinalIgnoreCase)
     $displayList = New-Object 'System.Collections.Generic.List[string]'
     foreach ($e in ($entries | Sort-Object -Property Username)) {
@@ -411,19 +407,12 @@ try {
         if (-not $displayToEntry.ContainsKey($u)) { $displayToEntry[$u] = $e; $displayList.Add($u) }
     }
 
-    # Populate the ComboBox via an ICollectionView so we can apply a LIVE
-    # case-insensitive SUBSTRING filter as the user types (spec §9 type-to-
-    # filter). WPF's IsTextSearchEnabled only does PREFIX auto-complete; it
-    # does NOT narrow the dropdown, so we filter the view ourselves.
-
-    $nameView = [System.Windows.Data.CollectionViewSource]::GetDefaultView($displayList)
-    $nameView.Filter = [System.Predicate[object]] {
-        param($item)
-        $f = [string]$script:NameFilterText
-        if ([string]::IsNullOrWhiteSpace($f)) { return $true }
-        return (([string]$item).IndexOf($f.Trim(), [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
-    }
-    $nameCombo.ItemsSource = $nameView
+    # The name field is a SELECTION-ONLY (non-editable) ComboBox: the only way
+    # to set a value is to pick a roster username from the list, so no free
+    # text or invalid entry is possible. Keyboard type-ahead (IsTextSearchEnabled)
+    # still jumps to a matching item once the list has focus - that is list
+    # navigation, not text entry. Bind the sorted username list directly.
+    $nameCombo.ItemsSource = $displayList
 
     # -----------------------------------------------------------------
     # Roster-unavailable path (spec §9): keep the window locking the
@@ -440,26 +429,26 @@ try {
 
     # =================================================================
     # Helper: recompute the valid selection + enabled states.
-    #   * A name is valid ONLY on an exact roster Display match (no free
-    #     text). Selecting from the dropdown or typing an exact match both
-    #     count.
+    #   * A name is valid ONLY when an item is picked from the dropdown
+    #     (selection-only; no free text is possible).
     #   * PasswordBox enabled once a valid name is selected.
     #   * Confirm enabled when a valid name is selected AND the password
     #     is non-empty.
     # =================================================================
     $updateState = {
-        # Watermark (— select your name —) shows only while the name box is
-        # empty. Updated first so it tracks the text even on the roster-
-        # unavailable early-return path below.
-        $nameWatermark.Visibility = if ([string]::IsNullOrEmpty([string]$nameCombo.Text)) { 'Visible' } else { 'Collapsed' }
+        # Watermark ("Select your name...") shows only while nothing is picked.
+        # Updated first so it tracks selection even on the roster-unavailable
+        # early-return path below.
+        $nameWatermark.Visibility = if ($null -eq $nameCombo.SelectedItem) { 'Visible' } else { 'Collapsed' }
 
         if (-not $script:RosterAvailable) { return }
 
-        # The editable ComboBox exposes the typed/selected text via .Text.
-        $text  = [string]$nameCombo.Text
+        # Selection-only ComboBox: the picked item IS a roster username, so map
+        # it back to its entry. No selection => no valid name.
+        $sel   = $nameCombo.SelectedItem
         $entry = $null
-        if (-not [string]::IsNullOrWhiteSpace($text) -and $displayToEntry.ContainsKey($text.Trim())) {
-            $entry = $displayToEntry[$text.Trim()]
+        if ($null -ne $sel -and $displayToEntry.ContainsKey([string]$sel)) {
+            $entry = $displayToEntry[[string]$sel]
         }
         $script:SelectedEntry = $entry
 
@@ -599,30 +588,10 @@ try {
     # =================================================================
     # Wire up control events.
     # =================================================================
-    # ComboBox text/selection changes -> recompute valid selection + states.
+    # Selection-only ComboBox: a pick fires SelectionChanged -> recompute the
+    # valid selection + enabled states. There is no edit TextBox, so there is
+    # no TextChanged / typing path to hook.
     $nameCombo.Add_SelectionChanged({ & $updateState })
-
-    # Editable-ComboBox text edits (typing, paste, IME composition) bubble the
-    # inner edit TextBox's TextChanged as a routed event. Hooking that is more
-    # reliable than KeyUp (which misses paste / mouse-driven edits). On each
-    # edit we update the substring filter, refresh the view, open the dropdown
-    # while the text is a partial match, and recompute the enabled-state.
-    $onNameTextChanged = {
-        param($s, $e)
-        $script:NameFilterText = [string]$nameCombo.Text
-        try { $nameView.Refresh() } catch { }
-        $trimmed = $script:NameFilterText.Trim()
-        $isExact = (-not [string]::IsNullOrEmpty($trimmed)) -and $displayToEntry.ContainsKey($trimmed)
-        if ((-not [string]::IsNullOrEmpty($trimmed)) -and (-not $isExact)) {
-            # Show the filtered matches. StaysOpenOnEdit=True keeps the caret
-            # in the edit box, so opening the dropdown does not steal focus.
-            if (-not $nameCombo.IsDropDownOpen) { $nameCombo.IsDropDownOpen = $true }
-        }
-        & $updateState
-    }
-    $nameCombo.AddHandler(
-        [System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent,
-        [System.Windows.RoutedEventHandler]$onNameTextChanged)
 
     # Password changes -> recompute Confirm-enabled (length only, no plaintext).
     $pwBox.Add_PasswordChanged({ & $updateState })
