@@ -137,6 +137,33 @@ Assert-True (-not $__threw) 'Set-AuditLogAcl -WhatIf does not throw'
 Assert-True ($__wr -eq $false) 'Set-AuditLogAcl -WhatIf returns $false (does not apply)'
 try { Remove-Item -LiteralPath $__d -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 
+Write-Host ''
+Write-Host 'Task 8: Shared-Auth-Update safety guards'
+$updPath = Join-Path $RepoRoot 'deploy\Shared-Auth-Update.ps1'
+Assert-True (Test-Path -LiteralPath $updPath) 'Shared-Auth-Update.ps1 exists'
+# Dot-source must NOT run MAIN (guarded by InvocationName); it only defines helpers.
+. $updPath
+foreach ($fn in 'Test-IsElevated','Test-AuditIsInstallDir','Test-AuditIsSourceTree','Get-AuditPathRelation') {
+    Assert-True ([bool](Get-Command $fn -ErrorAction SilentlyContinue)) "function $fn is defined"
+}
+# The repo root is both a valid install (config+prompt) and a valid source (prompt+register).
+Assert-True (Test-AuditIsInstallDir $RepoRoot) 'RepoRoot recognized as a valid install dir'
+Assert-True (Test-AuditIsSourceTree $RepoRoot) 'RepoRoot recognized as a valid source tree'
+# An empty dir is neither (the delete guard must reject a wrong -InstallDir).
+$__empty = Join-Path $env:TEMP ('audupd_' + [System.IO.Path]::GetRandomFileName())
+New-Item -ItemType Directory -Force $__empty | Out-Null
+try {
+    Assert-True (-not (Test-AuditIsInstallDir $__empty)) 'empty dir is NOT a valid install'
+    Assert-True (-not (Test-AuditIsSourceTree $__empty)) 'empty dir is NOT a valid source'
+} finally { Remove-Item -LiteralPath $__empty -Recurse -Force -ErrorAction SilentlyContinue }
+# Path-relation guard: same / nested (both directions) / ok, trailing-sep safe.
+Assert-Eq (Get-AuditPathRelation -Source 'C:\a\b'  -Dest 'C:\a\b')  'same'   'identical paths => same'
+Assert-Eq (Get-AuditPathRelation -Source 'C:\a\b\' -Dest 'C:\a\b')  'same'   'trailing-sep identical => same'
+Assert-Eq (Get-AuditPathRelation -Source 'C:\a'    -Dest 'C:\a\b')  'nested' 'dest inside source => nested'
+Assert-Eq (Get-AuditPathRelation -Source 'C:\a\b'  -Dest 'C:\a')    'nested' 'source inside dest => nested'
+Assert-Eq (Get-AuditPathRelation -Source 'C:\stage' -Dest 'C:\Program Files\SharedAccountAuth') 'ok' 'disjoint paths => ok'
+Assert-Eq (Get-AuditPathRelation -Source 'C:\audit' -Dest 'C:\auditX') 'ok' 'prefix-sharing siblings are NOT nested'
+
 if ($script:Failures -gt 0) { Write-Host ("$($script:Failures) failure(s)") -ForegroundColor Red; exit 1 }
 Write-Host 'All tests passed.' -ForegroundColor Green
 exit 0
