@@ -113,6 +113,22 @@ Assert-True ($logonXml -match '<Priority>4</Priority>') 'Logon task priority is 
 $unlockXml = Get-Content -Raw (Join-Path $RepoRoot 'tasks\SharedAccountAuth-Unlock.xml')
 Assert-True ($unlockXml -match '<Priority>4</Priority>') 'Unlock task priority is 4'
 
+Write-Host ''
+Write-Host 'Task 1: ACL engine in AuditInstallCommon'
+foreach ($fn in 'Set-AuditLogAcl','Set-AuditLocalStateAcl','New-SharedDirCreateAce','New-AuditorsReadAce') {
+    Assert-True ([bool](Get-Command $fn -ErrorAction SilentlyContinue)) "function $fn is defined"
+}
+# ACE builders are pure — they must produce FileSystemAccessRule objects without touching disk.
+$__ace = New-SharedDirCreateAce -Principal $env:USERNAME
+Assert-True ($__ace -is [System.Security.AccessControl.FileSystemAccessRule]) 'New-SharedDirCreateAce returns a FileSystemAccessRule'
+# Set-AuditLogAcl -WhatIf must validate + gate without applying or throwing.
+$__d = Join-Path $env:TEMP ('logacl_' + [System.IO.Path]::GetRandomFileName())
+New-Item -ItemType Directory -Force $__d | Out-Null
+$__threw = $false
+try { $__r = Set-AuditLogAcl -LogDir $__d -SharedPrincipal $env:USERNAME -AuditorsPrincipal 'Administrators' -WhatIf } catch { $__threw = $true }
+Assert-True (-not $__threw) 'Set-AuditLogAcl -WhatIf does not throw'
+try { Remove-Item -LiteralPath $__d -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+
 if ($script:Failures -gt 0) { Write-Host ("$($script:Failures) failure(s)") -ForegroundColor Red; exit 1 }
 Write-Host 'All tests passed.' -ForegroundColor Green
 exit 0
