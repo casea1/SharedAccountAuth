@@ -28,12 +28,11 @@ SharedAccountAuth/
 ├─ config/
 │  └─ AuditConfig.psd1           # single source of truth for paths/tunables + SharedAccount
 ├─ deploy/
-│  ├─ Install-Audit.ps1          # one-command per-PC install: self-elevate, register tasks, preflight-validate
-│  ├─ Install-Audit-GUI.ps1      # WPF single-pane front-end over Install-Audit (collect paths, preview roster, install)
+│  ├─ Shared-Auth-Setup.ps1      # one-command setup: config + folder ACLs + tasks + preflight
 │  ├─ AuditInstallCommon.ps1     # shared install-time library (preflight, local-account check, config writer)
-│  ├─ Register-AuditTasks.ps1    # registers Logon + SessionUnlock tasks SCOPED to the shared account
+│  ├─ Register-AuditTasks.ps1    # engine/advanced: registers Logon + SessionUnlock tasks SCOPED to the shared account
 │  ├─ Unregister-AuditTasks.ps1  # removes both tasks
-│  └─ Setup-SharePermissions.ps1 # admin-once: append-only ACLs on the log dir (run on the server)
+│  └─ Setup-SharePermissions.ps1 # engine/advanced: admin-once, append-only ACLs on the log dir (run on the server)
 ├─ assets/
 │  └─ GE-Aerospace-Emblem.png    # logo displayed in the classification banner
 ├─ sample/
@@ -102,69 +101,21 @@ Unlock ──┘        │
 
 Carried out offline. The repository is one self-contained tree; copy it whole.
 
-### A. On the file server (admin, once)
+### On each workstation
 
-1. **Create the audit directory** on a local volume, e.g. `D:\audit`, and share it (e.g. `\\server\share\audit`).
-2. **Apply append-only ACLs** with `deploy/Setup-SharePermissions.ps1`. Use the **local** path on the server, not the UNC:
+1. Copy the whole tree to `C:\Program Files\SharedAccountAuth\`.
+2. Run `.\deploy\Shared-Auth-Setup.ps1` (it self-elevates).
+   Fill in: central log path, roster path, shared account, auditors group
+   (default `Audit`), classification. Click Install.
+   It writes the config, sets folder permissions, registers the tasks, and
+   runs the preflight. Done.
 
-   ```powershell
-   # Dry run first
-   .\deploy\Setup-SharePermissions.ps1 -LogDir 'D:\audit' `
-       -SharedPrincipal 'LAB\LabSharedGroup' `
-       -AuditorsPrincipal 'LAB\Auditors' -WhatIf
+### Only if the log is a central SERVER share (`\\server\share`)
 
-   # Apply
-   .\deploy\Setup-SharePermissions.ps1 -LogDir 'D:\audit' `
-       -SharedPrincipal 'LAB\LabSharedGroup' `
-       -AuditorsPrincipal 'LAB\Auditors'
-   ```
+Run `deploy\Setup-SharePermissions.ps1` on the SERVER once to set the
+append-only ACL there (a workstation can't set a remote server's NTFS ACLs).
 
-   This grants the shared principal **CreateFiles + AppendData** but **DENIES ReadData + Delete**, grants `Auditors` Read, and grants the admin principal (default `BUILTIN\Administrators`) FullControl. The script prints the resulting ACL. `-AdminPrincipal` overrides the FullControl principal.
-
-3. **Place the roster** at `\\server\share\audit\roster.csv` (see [section 9](#9-auditor-review) and the roster format below). The shared account needs **read-only** access to it.
-
-### B. On each workstation (admin, per PC)
-
-4. **Copy the whole tree** to a fixed, protected location — recommended `C:\Program Files\SharedAccountAuth\` (or any AppLocker-allowed dir; see [STIG](#6-stig-considerations)). Keep the `src/`, `config/`, `deploy/`, `tasks/`, `sample/`, `assets/` layout intact — scripts locate siblings via `$PSScriptRoot`.
-
-5. **Edit `config\AuditConfig.psd1`** for the site. At minimum:
-   - `LogPath` → the central CSV UNC, e.g. `\\server\share\audit\access_log.csv`
-   - `RosterPath` → the central roster UNC, e.g. `\\server\share\audit\roster.csv`
-   - **`SharedAccount`** → the one shared account this prompt applies to (e.g. `.\LabShared`). **Required** — `Get-AuditConfig` throws if it is blank.
-   - Optionally `AuthDomain` (default `.` = local SAM), `RetryDelayMs`, `DebounceSeconds`, retry tunables, and UI text.
-   - **Classification banner:** `ClassificationLevel` sets the banner color tier; `ClassificationText` overrides the displayed string (defaults to the level name); `ClassificationForeground` / `ClassificationBackground` override individual colors. Built-in level→color defaults:
-
-     | `ClassificationLevel` | Foreground | Background |
-     |---|---|---|
-     | `UNCLASSIFIED` | White | `#007A33` (green) |
-     | `CUI` | White | `#512B85` (purple) |
-     | `CONFIDENTIAL` | White | `#0033A0` (blue) |
-     | `SECRET` | White | `#C8102E` (red) |
-     | `TOP SECRET` | Black | `#FF8C00` (orange) |
-
-   - **Logo:** `LogoPath` — absolute or `$PSScriptRoot`-relative path to a PNG/BMP displayed in the banner (e.g. `assets\GE-Aerospace-Emblem.png` relative to the install root). Leave blank to hide the logo image.
-
-   Leave `RosterCachePath`, `SpoolDir`, `DiagLogPath`, `StateDir` blank to derive them under `LocalRoot` (`C:\ProgramData\SharedAccountAuth`).
-
-6. **Run the installer.** It self-elevates (UAC prompt), registers both scheduled tasks scoped to the shared account, then runs a preflight that surfaces the otherwise-silent runtime failure modes:
-
-   ```powershell
-   .\deploy\Install-Audit.ps1
-   # or pin the scoped account / a non-default config:
-   .\deploy\Install-Audit.ps1 -SharedAccount '.\LabShared'
-   # validate an existing install without changing anything:
-   .\deploy\Install-Audit.ps1 -ValidateOnly
-   ```
-
-   Registration creates `SharedAccountAuth-Logon` (LogonTrigger) and `SharedAccountAuth-Unlock` (SessionStateChange → SessionUnlock), both with `UserId` = the resolved shared account, an `InteractiveToken` / `LeastPrivilege` principal, and writes reference XML to `tasks/`.
-
-   The **preflight** reports OK/WARN/FAIL for: config valid + `SharedAccount` set; install files present; the central `LogPath` UNC is reachable (else runtime spools locally); the roster loads and **every roster `Username` has a matching local account on this PC** — the username is what `LogonUser` validates against the local SAM, so anyone missing is listed and could never authenticate here; and both tasks are registered + enabled. Resolve any `FAIL` before relying on the prompt.
-
-   > **No signing.** The scripts are not Authenticode-signed — the launcher runs the `.ps1` with `-ExecutionPolicy Bypass` and AppLocker governs the install directory (see [STIG](#6-stig-considerations)). `Install-Audit.ps1` just orchestrates `deploy\Register-AuditTasks.ps1`, which you can still run directly (elevated) to register without the installer. To remove the tasks: `.\deploy\Unregister-AuditTasks.ps1`.
-
-   **Prefer a GUI?** Run `.\deploy\Install-Audit-GUI.ps1` instead — a single-pane window that self-elevates, prefills from the current config, lets you Test each path and preview the roster (read-only, with a "has a local account here?" column), then writes the config (backing up the prior file to `AuditConfig.psd1.bak`) and registers the tasks. It runs the same preflight as the CLI. The CLI remains for scripted/silent installs.
-
-7. **Test** as described in [section 7](#7-testing) before relying on it (the installer's preflight is a fast first check; the sign-out/in + unlock test confirms the end-to-end flow).
+Then **test** as described in [section 7](#7-testing) before relying on it (the preflight that runs at the end of `Shared-Auth-Setup.ps1` is a fast first check; the sign-out/in + unlock test confirms the end-to-end flow).
 
 ---
 

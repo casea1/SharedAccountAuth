@@ -1,7 +1,7 @@
 # Install GUI Wizard — Design Spec
 
 **Date:** 2026-06-18
-**Status:** Proposed
+**Status:** Proposed (superseded 2026-07-21 — see rev note below)
 **Parent:** [2026-06-17-sign-on-audit-logger-design.md](2026-06-17-sign-on-audit-logger-design.md) (rev 3 — unsigned scripts via `-ExecutionPolicy Bypass`; `deploy/Install-Audit.ps1` CLI installer + preflight)
 **Target:** Windows 11 Enterprise, air-gapped / offline. Windows PowerShell **5.1** + **.NET Framework 4.x** (WPF). **No internet, no external modules** — same stack as the runtime prompt.
 
@@ -23,6 +23,8 @@ Provide a single-pane **WPF GUI front-end** over the existing per-PC install so 
 | Elevation | **Self-elevate the whole GUI at launch** (UAC relaunch), mirroring `Install-Audit.ps1` — registering tasks needs admin. |
 | File staging | **Out of scope.** The GUI assumes the tree is already copied into place (run from `deploy\`), exactly like the CLI. It does not copy files. |
 | Code reuse | **Extract** the preflight engine + helpers from `Install-Audit.ps1` into a new shared `deploy\AuditInstallCommon.ps1`, dot-sourced by **both** the CLI and the GUI. No duplicated validation. |
+
+> **Rev 2026-07-21 (unified setup tool):** This design is superseded by [2026-07-21-unified-setup-tool-design.md](2026-07-21-unified-setup-tool-design.md). The GUI described here is **renamed** to `deploy/Shared-Auth-Setup.ps1` and **expanded** beyond config-only: it now also sets folder permissions (the append-only log ACL when the log path is local, and the local-state ACL, always) and collects an **Auditors** group and a **Classification** level in addition to the paths/shared-account fields described below. The CLI installer `deploy/Install-Audit.ps1` described throughout this doc is **retired** — `Shared-Auth-Setup.ps1` is the one and only install entry point going forward. See the linked doc for the current, full design.
 
 ## 3. Architecture & components
 
