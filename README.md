@@ -29,6 +29,7 @@ SharedAccountAuth/
 │  └─ AuditConfig.psd1           # single source of truth for paths/tunables + SharedAccount
 ├─ deploy/
 │  ├─ Shared-Auth-Setup.ps1      # one-command setup: config + folder ACLs + tasks + preflight
+│  ├─ Shared-Auth-Update.ps1     # one-command in-place upgrade to a new version (preserves config)
 │  ├─ AuditInstallCommon.ps1     # shared install-time library (preflight, local-account check, config writer)
 │  ├─ Register-AuditTasks.ps1    # engine/advanced: registers Logon + SessionUnlock tasks SCOPED to the shared account
 │  ├─ Unregister-AuditTasks.ps1  # removes both tasks
@@ -116,6 +117,19 @@ Run `deploy\Setup-SharePermissions.ps1` on the SERVER once to set the
 append-only ACL there (a workstation can't set a remote server's NTFS ACLs).
 
 Then **test** as described in [section 7](#7-testing) before relying on it (the preflight that runs at the end of `Shared-Auth-Setup.ps1` is a fast first check; the sign-out/in + unlock test confirms the end-to-end flow).
+
+### Updating an existing install
+
+To move an installed PC to a newer version, use **`Shared-Auth-Update.ps1`** - it does the whole replace for you and preserves your settings:
+
+1. Copy/extract the new version tree to a staging folder (or USB) - anywhere except the installed location.
+2. From that new tree, run `.\deploy\Shared-Auth-Update.ps1` (it self-elevates).
+
+It backs up your `AuditConfig.psd1`, replaces the program files with the new version (deleting the old tree so renamed/removed files don't linger), restores your config, re-registers both scheduled tasks, re-applies the local-state permissions, and runs the preflight. No reboot needed - the new prompt takes effect on the next logon/unlock.
+
+Flags: `-InstallDir <path>` (target; default `C:\Program Files\SharedAccountAuth`), `-Configure` (open the setup GUI afterward to also change settings), `-WhatIf` (preview every step, change nothing).
+
+It **preserves** your config and **never touches** the local state under `C:\ProgramData\SharedAccountAuth\` (spool/cache/diag), the central log + roster share (and its server-side ACL), or the log-folder ACL. A timestamped config backup is kept under `C:\ProgramData\SharedAccountAuth\config-backups\` for rollback. For a *first* install - or to change the log location or auditors group - use `Shared-Auth-Setup.ps1` instead.
 
 ### Classification banner and logo
 
