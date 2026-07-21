@@ -47,6 +47,8 @@ function Get-AuditGuiXaml {
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
       <RowDefinition Height="*"/>
       <RowDefinition Height="Auto"/>
@@ -70,10 +72,25 @@ function Get-AuditGuiXaml {
     <TextBox   Grid.Row="2" Grid.Column="1" x:Name="AccountBox" Margin="4"/>
     <Button    Grid.Row="2" Grid.Column="2" x:Name="TestAccountBtn" Content="Check" Width="70" Margin="4"/>
 
-    <TextBlock Grid.Row="3" Grid.Column="0" Text="Install dir:" Margin="4" VerticalAlignment="Center"/>
-    <TextBlock Grid.Row="3" Grid.Column="1" x:Name="InstallDirText" Margin="4" Foreground="Gray" VerticalAlignment="Center"/>
+    <!-- Read-only reviewers group (NOT stored in config; drives the log ACL only). -->
+    <TextBlock Grid.Row="3" Grid.Column="0" Text="Auditors (read-only group):" Margin="4" VerticalAlignment="Center"/>
+    <TextBox   Grid.Row="3" Grid.Column="1" x:Name="AuditorsBox" Margin="4" Text="Audit"/>
 
-    <GroupBox Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="3" Header="Roster preview (read-only)" Margin="4">
+    <!-- Classification banner level persisted to config; (none) => blank. -->
+    <TextBlock Grid.Row="4" Grid.Column="0" Text="Classification:" Margin="4" VerticalAlignment="Center"/>
+    <ComboBox  Grid.Row="4" Grid.Column="1" x:Name="ClassificationCombo" Margin="4">
+      <ComboBoxItem Content="(none)"/>
+      <ComboBoxItem Content="UNCLASSIFIED"/>
+      <ComboBoxItem Content="CUI"/>
+      <ComboBoxItem Content="CONFIDENTIAL"/>
+      <ComboBoxItem Content="SECRET"/>
+      <ComboBoxItem Content="TOP SECRET"/>
+    </ComboBox>
+
+    <TextBlock Grid.Row="5" Grid.Column="0" Text="Install dir:" Margin="4" VerticalAlignment="Center"/>
+    <TextBlock Grid.Row="5" Grid.Column="1" x:Name="InstallDirText" Margin="4" Foreground="Gray" VerticalAlignment="Center"/>
+
+    <GroupBox Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="3" Header="Roster preview (read-only)" Margin="4">
       <ListView x:Name="RosterGrid">
         <ListView.View>
           <GridView>
@@ -86,7 +103,7 @@ function Get-AuditGuiXaml {
       </ListView>
     </GroupBox>
 
-    <GroupBox Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="3" Header="Preflight" Margin="4">
+    <GroupBox Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="3" Header="Preflight" Margin="4">
       <ListView x:Name="ResultGrid">
         <ListView.View>
           <GridView>
@@ -113,9 +130,9 @@ function Get-AuditGuiXaml {
       </ListView>
     </GroupBox>
 
-    <TextBlock Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="3" x:Name="StatusText" Margin="4" TextWrapping="Wrap"/>
+    <TextBlock Grid.Row="8" Grid.Column="0" Grid.ColumnSpan="3" x:Name="StatusText" Margin="4" TextWrapping="Wrap"/>
 
-    <StackPanel Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="4">
+    <StackPanel Grid.Row="9" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="4">
       <Button x:Name="ValidateBtn" Content="Validate" Width="100" Margin="4"/>
       <Button x:Name="InstallBtn"  Content="Install"  Width="100" Margin="4"/>
       <Button x:Name="CloseBtn"    Content="Close"    Width="100" Margin="4"/>
@@ -126,10 +143,15 @@ function Get-AuditGuiXaml {
 }
 
 function Get-AuditGuiSettings($win) {
+    # Classification combo -> config value; the placeholder "(none)" maps to blank.
+    $clsItem = $win.FindName('ClassificationCombo').SelectedItem
+    $cls = if ($null -ne $clsItem) { [string]$clsItem.Content } else { '' }
+    if ($cls -eq '(none)') { $cls = '' }
     @{
-        LogPath       = $win.FindName('LogBox').Text.Trim()
-        RosterPath    = $win.FindName('RosterBox').Text.Trim()
-        SharedAccount = $win.FindName('AccountBox').Text.Trim()
+        LogPath             = $win.FindName('LogBox').Text.Trim()
+        RosterPath          = $win.FindName('RosterBox').Text.Trim()
+        SharedAccount       = $win.FindName('AccountBox').Text.Trim()
+        ClassificationLevel = $cls
     }
 }
 
@@ -170,7 +192,9 @@ function Invoke-AuditGuiMain {
     $realConfig = if ([string]::IsNullOrWhiteSpace($ConfigPath)) { $DefaultConfigPath } else { $ConfigPath }
 
     # Prefill tolerantly (NOT Get-AuditConfig, which throws on a blank SharedAccount).
+    # $raw holds the raw imported psd1 (or stays $null) so the classification prefill below is StrictMode-safe.
     $pref = @{ LogPath=''; RosterPath=''; SharedAccount='' }
+    $raw  = $null
     if (Test-Path -LiteralPath $realConfig) {
         try {
             $raw = Import-PowerShellDataFile -LiteralPath $realConfig
@@ -187,6 +211,18 @@ function Invoke-AuditGuiMain {
     $win.FindName('AccountBox').Text     = $pref.SharedAccount
     $win.FindName('InstallDirText').Text = $InstallRoot
     $status = $win.FindName('StatusText')
+
+    # Select the classification combo item matching the config (or "(none)").
+    # Auditors is left at its XAML "Audit" default (it is NOT persisted in config).
+    $clsWanted = ''
+    if ($raw -and $raw.ContainsKey('ClassificationLevel')) { $clsWanted = [string]$raw['ClassificationLevel'] }
+    $clsCombo = $win.FindName('ClassificationCombo')
+    $clsSel = 0
+    for ($i = 0; $i -lt $clsCombo.Items.Count; $i++) {
+        $txt = [string]$clsCombo.Items[$i].Content
+        if ($txt -eq $clsWanted -or ($clsWanted -eq '' -and $txt -eq '(none)')) { $clsSel = $i; break }
+    }
+    $clsCombo.SelectedIndex = $clsSel
 
     # --- per-field Test buttons ---
     $win.FindName('TestLogBtn').Add_Click({
@@ -237,11 +273,37 @@ function Invoke-AuditGuiMain {
         try {
             $settings = Get-AuditGuiSettings $win
             if ([string]::IsNullOrWhiteSpace($settings.SharedAccount)) { $status.Text = 'Shared account is required.'; return }
+            # Auditors is read here (NOT persisted in config); it drives the log-folder ACL only.
+            $auditors = $win.FindName('AuditorsBox').Text.Trim()
+            if ([string]::IsNullOrWhiteSpace($auditors)) { $auditors = 'Audit' }
             $ans = [System.Windows.MessageBox]::Show("Write config to:`n$realConfig`nand register the tasks?", 'Confirm install', 'OKCancel', 'Question')
             if ($ans -ne 'OK') { $status.Text = 'Install cancelled.'; return }
 
             $bak = Write-AuditConfigFile -ConfigPath $realConfig -Settings $settings
             Write-AuditDiag -Config (Get-AuditConfig -ConfigPath $realConfig) -Level Info -Message ("GUI: wrote config (backup={0})" -f $bak)
+
+            # --- Permissions ---
+            # Local state (always): the shared account must write its own cache/diag/spool/state.
+            try {
+                Set-AuditLocalStateAcl -Config (Get-AuditConfig -ConfigPath $realConfig) -SharedAccountOverride $settings.SharedAccount
+                $status.Text = 'Local-state permissions set.'
+            } catch { $status.Text = "Local-state ACL error: $($_.Exception.Message)" }
+
+            # Log folder ACL: only when the log path is LOCAL (a workstation can't
+            # set a remote server's NTFS ACLs - for a UNC share use Setup-SharePermissions on the server).
+            $logDir = Split-Path -Parent $settings.LogPath
+            if ($settings.LogPath -like '\\*') {
+                $status.Text = "Log is a UNC share - set its ACL on the server with Setup-SharePermissions.ps1."
+            } elseif (-not [string]::IsNullOrWhiteSpace($logDir)) {
+                # Resolve grantable principals (MACHINE\name for bare/.\; keep MACHINE\/DOMAIN\).
+                $sharedLeaf = Get-AuditLeafName -Name $settings.SharedAccount
+                $sharedGrantee = if ($settings.SharedAccount -like '*\*' -and $settings.SharedAccount -notlike '.\*') { $settings.SharedAccount } else { "$env:COMPUTERNAME\$sharedLeaf" }
+                $audLeaf = Get-AuditLeafName -Name $auditors
+                $audGrantee = if ($auditors -like '*\*' -and $auditors -notlike '.\*') { $auditors } else { "$env:COMPUTERNAME\$audLeaf" }
+                $ok = Set-AuditLogAcl -LogDir $logDir -SharedPrincipal $sharedGrantee -AuditorsPrincipal $audGrantee
+                if ($ok) { $status.Text = "Log-folder append-only ACL applied: $logDir" }
+                else { $status.Text = "Log-folder ACL not applied (see warnings) - $logDir" }
+            }
 
             & $RegisterPath -ConfigPath $realConfig
 

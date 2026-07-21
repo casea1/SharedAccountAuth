@@ -88,7 +88,7 @@ $xaml = Get-AuditGuiXaml
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [System.Windows.Markup.XamlReader]::Load($reader)
 Assert-True ($null -ne $win) 'XAML loads into a Window'
-foreach ($name in 'LogBox','RosterBox','AccountBox','RosterGrid','ResultGrid','ValidateBtn','InstallBtn','CloseBtn','StatusText') {
+foreach ($name in 'LogBox','RosterBox','AccountBox','AuditorsBox','ClassificationCombo','RosterGrid','ResultGrid','ValidateBtn','InstallBtn','CloseBtn','StatusText') {
     Assert-True ($null -ne $win.FindName($name)) "control '$name' present"
 }
 
