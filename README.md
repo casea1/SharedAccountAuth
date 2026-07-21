@@ -129,7 +129,7 @@ The setup tool's **Classification** dropdown writes `ClassificationLevel` to `Au
 | `SECRET` | White | `#C8102E` (red) |
 | `TOP SECRET` | Black | `#FF8C00` (orange) |
 
-Selecting `(none)` hides the banner. To customize beyond the dropdown, edit the psd1 directly: `ClassificationText` overrides the displayed string (defaults to the level name); `ClassificationForeground` / `ClassificationBackground` override the individual colors. `LogoPath` (absolute or `$PSScriptRoot`-relative, e.g. `assets\GE-Aerospace-Emblem.png`) sets the logo shown in the banner; leave it blank to hide the logo.
+Selecting `(none)` hides the banner. To customize beyond the dropdown, edit the psd1 directly: `ClassificationText` overrides the displayed string (defaults to the level name); `ClassificationForeground` / `ClassificationBackground` override the individual colors. `LogoPath` (absolute or `$PSScriptRoot`-relative) sets the logo shown in the banner; leave it blank to use the bundled default (`assets\GE-Aerospace-Emblem.png`) - a missing or unreadable image simply collapses the logo, so point `LogoPath` at a nonexistent file if you want no logo.
 
 ---
 
